@@ -22,5 +22,5 @@ Set environment variables:
 Then run:
 
 ```bash
-python /home/runner/work/scholar-summary/scholar-summary/scholar_alert_agent.py
+python scholar_alert_agent.py
 ```
