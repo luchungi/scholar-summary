@@ -8,11 +8,10 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+import config
+
 # If modifying these scopes, delete the file token.json.
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse, parse_qs
 
 def extract_links_from_html(html_content):
     """
@@ -81,7 +80,7 @@ def get_html_body(part):
 
     return None
 
-def fetch_latest_alerts(credentials_path="./gmail/credentials.json", token_path="./gmail/token.json", limit=20):
+def fetch_latest_alerts(credentials_path=config.GMAIL_CREDENTIALS_PATH, token_path=config.GMAIL_TOKEN_PATH, limit=20):
     """
     Connects to Gmail via Google Gmail API, searches for Google Alert emails, and returns a list of alert items.
     """
