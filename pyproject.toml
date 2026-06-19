@@ -1,0 +1,22 @@
+[project]
+name = "scholar-summary"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aisuite>=0.1.14",
+    "beautifulsoup4>=4.15.0",
+    "google-api-python-client>=2.197.0",
+    "google-auth-httplib2>=0.4.0",
+    "google-auth-oauthlib>=1.4.0",
+    "ipykernel>=7.3.0",
+    "ipywidgets>=8.1.8",
+    "numpy>=2.4.6",
+    "openai>=2.43.0",
+    "pandas>=3.0.3",
+    "pydantic>=2.13.4",
+    "pypdf>=6.13.3",
+    "python-dotenv>=1.2.2",
+    "requests>=2.34.2",
+]
