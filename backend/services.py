@@ -1,0 +1,307 @@
+import os
+import sys
+import queue
+import io
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse
+from sqlmodel import Session, select
+from backend.models import Run, Paper, EmailAlert
+from backend.database import engine
+
+# Import original components from root folder
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+import config
+import gmail_fetcher
+import paper_retriever
+import agent
+from main import (
+    ensure_interests_file, 
+    sanitize_filename, 
+    print_diff, 
+    normalize_url, 
+    remove_duplicate_links
+)
+
+# In-memory dictionary to hold live log queues for running jobs
+active_logs: Dict[int, queue.Queue] = {}
+
+class QueueWriter(io.TextIOBase):
+    """
+    A helper file-like object that redirects write operations to a thread-safe Queue.
+    """
+    def __init__(self, q: queue.Queue):
+        self.q = q
+    def write(self, s):
+        if s:
+            self.q.put(s)
+        return len(s)
+    def flush(self):
+        pass
+
+class LogCapture:
+    """
+    Context manager to redirect stdout and stderr to a queue.
+    """
+    def __init__(self, q: queue.Queue):
+        self.q = q
+        self.old_stdout = sys.stdout
+        self.old_stderr = sys.stderr
+        self.writer = QueueWriter(q)
+    def __enter__(self):
+        sys.stdout = self.writer
+        sys.stderr = self.writer
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stdout = self.old_stdout
+        sys.stderr = self.old_stderr
+
+def get_latest_alerts_from_gmail() -> List[Dict[str, Any]]:
+    """
+    Fetches Gmail Google Alerts, syncs new ones to the DB, and returns alert structures.
+    """
+    config.validate_config()
+    raw_alerts = gmail_fetcher.fetch_latest_alerts(
+        credentials_path=config.GMAIL_CREDENTIALS_PATH,
+        token_path=config.GMAIL_TOKEN_PATH,
+        limit=config.MAX_EMAIL_FETCH
+    )
+    
+    # Normalize URLs and deduplicate links across emails
+    raw_alerts = remove_duplicate_links(raw_alerts)
+    
+    new_alerts = []
+    with Session(engine) as session:
+        for alert in raw_alerts:
+            # Check if this email alert was already fetched
+            stmt = select(EmailAlert).where(EmailAlert.message_id == alert["id"])
+            existing = session.exec(stmt).first()
+            if not existing:
+                db_alert = EmailAlert(
+                    message_id=alert["id"],
+                    subject=alert["subject"],
+                    date=alert["date"],
+                    processed=False
+                )
+                session.add(db_alert)
+                new_alerts.append(alert)
+        session.commit()
+    
+    return raw_alerts
+
+def extract_web_page_title(url: str) -> Optional[str]:
+    """
+    Attempts to fetch the target URL and parse its HTML <title> tag.
+    Special parsing is added for arXiv PDFs to extract the title from the abstract page.
+    """
+    try:
+        resolved = paper_retriever.resolve_url(url)
+        parsed = urlparse(resolved)
+        
+        # Special case for arXiv PDF: convert /pdf/... to /abs/... to parse the title
+        if "arxiv.org" in parsed.netloc and "/pdf/" in parsed.path:
+            abs_path = parsed.path.replace("/pdf/", "/abs/")
+            # Strip trailing .pdf if present
+            if abs_path.endswith(".pdf"):
+                abs_path = abs_path[:-4]
+            abs_url = f"https://arxiv.org{abs_path}"
+            
+            res = requests.get(abs_url, headers=paper_retriever.HEADERS, timeout=10)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, "html.parser")
+                title_el = soup.find("h1", class_="title")
+                if title_el:
+                    # Remove "Title:" prefix
+                    return title_el.text.replace("Title:", "").strip()
+                    
+        # General case
+        res = requests.get(resolved, headers=paper_retriever.HEADERS, timeout=10)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            if soup.title and soup.title.string:
+                return soup.title.string.strip()
+    except Exception as e:
+        print(f"[-] Error auto-extracting web page title: {e}")
+    return None
+
+def run_paper_processing_task(
+    run_id: int, 
+    papers_to_process: List[Dict[str, str]], 
+    q: queue.Queue
+):
+    """
+    Synchronous task runner that compiles summaries, updates the SQLite tables,
+    and captures stdout to the queue.
+    """
+    with LogCapture(q):
+        print(f"[+] Starting paper processing run {run_id} at {datetime.now()}")
+        print(f"[+] Papers to process: {len(papers_to_process)}")
+        
+        success_count = 0
+        failure_count = 0
+        
+        # Load user interests
+        try:
+            current_interests = ensure_interests_file()
+        except Exception as e:
+            print(f"[-] Error loading user interests: {e}")
+            current_interests = ""
+            
+        for idx, paper_info in enumerate(papers_to_process, 1):
+            title = paper_info.get("title", "").strip()
+            url = paper_info.get("url")
+            
+            print("\n" + "=" * 60)
+            print(f"[{idx}/{len(papers_to_process)}] Fetching paper text for URL: {url}")
+            print("=" * 60)
+            
+            # Fetch text
+            paper_text = None
+            try:
+                paper_text = paper_retriever.retrieve_paper_text(url)
+            except Exception as e:
+                print(f"[-] Error retrieving paper: {e}")
+                
+            if not paper_text:
+                print("[-] Skipping paper: could not retrieve text.")
+                failure_count += 1
+                with Session(engine) as session:
+                    db_title = title
+                    if not db_title or db_title in ("Manual URL Analysis", "Manual Input Paper", "Untitled"):
+                        db_title = extract_web_page_title(url) or "Manual Input Paper"
+                        
+                    # Check if this exact paper title & url is already listed as failed
+                    stmt = select(Paper).where(
+                        Paper.title == db_title,
+                        Paper.url == url,
+                        Paper.status == "failed"
+                    )
+                    existing_failed = session.exec(stmt).first()
+                    if not existing_failed:
+                        db_paper = Paper(
+                            title=db_title,
+                            url=url,
+                            status="failed",
+                            run_id=run_id
+                        )
+                        session.add(db_paper)
+                    else:
+                        existing_failed.date_processed = datetime.utcnow()
+                        existing_failed.run_id = run_id
+                        session.add(existing_failed)
+                    session.commit()
+                continue
+                
+            # If the title is generic, auto-extract the paper title
+            if not title or title in ("Manual URL Analysis", "Manual Input Paper", "Untitled"):
+                print(f"[*] Title is generic. Extracting title from paper text using LLM...")
+                extracted_title = agent.extract_paper_title(paper_text)
+                if extracted_title:
+                    title = extracted_title
+                    print(f"[+] Extracted clean title from paper text: {title}")
+                else:
+                    print(f"[*] Fallback: extracting title from web page metadata...")
+                    extracted_title = extract_web_page_title(url)
+                    if extracted_title:
+                        title = extracted_title
+                        print(f"[+] Extracted clean title from metadata: {title}")
+                    else:
+                        title = "Manual Input Paper"
+
+            print(f"[+] Processing paper: {title}")
+            print(f"[+] Retrieved {len(paper_text)} characters of text.")
+            
+            # Generate summary report using LM Studio LLM
+            try:
+                report = agent.generate_paper_report(title, url, paper_text, current_interests)
+                report = f"# {title}\n\n**Link**: [{url}]({url})\n\n---\n\n" + report
+                
+                # Save markdown file
+                os.makedirs(config.REPORTS_DIR, exist_ok=True)
+                safe_title = sanitize_filename(title)
+                report_path = Path(config.REPORTS_DIR) / f"report_{safe_title}.md"
+                report_path.write_text(report, encoding="utf-8")
+                
+                print(f"[+] Report saved to {report_path}")
+                success_count += 1
+                
+                # Save to database
+                with Session(engine) as session:
+                    db_paper = Paper(
+                        title=title,
+                        url=url,
+                        status="success",
+                        report_path=str(report_path),
+                        run_id=run_id
+                    )
+                    session.add(db_paper)
+                    session.commit()
+                    
+            except Exception as e:
+                print(f"[-] Error generating report: {e}")
+                failure_count += 1
+                with Session(engine) as session:
+                    stmt = select(Paper).where(
+                        Paper.title == title,
+                        Paper.url == url,
+                        Paper.status == "failed"
+                    )
+                    existing_failed = session.exec(stmt).first()
+                    if not existing_failed:
+                        db_paper = Paper(
+                            title=title,
+                            url=url,
+                            status="failed",
+                            run_id=run_id
+                        )
+                        session.add(db_paper)
+                    else:
+                        existing_failed.date_processed = datetime.utcnow()
+                        existing_failed.run_id = run_id
+                        session.add(existing_failed)
+                    session.commit()
+        
+        # Complete run updates
+        print(f"\n[+] Run {run_id} finished! Succeeded: {success_count}, Failed: {failure_count}")
+        with Session(engine) as session:
+            db_run = session.get(Run, run_id)
+            if db_run:
+                db_run.status = "completed" if failure_count == 0 else "failed"
+                db_run.papers_processed = success_count
+                db_run.papers_failed = failure_count
+                session.add(db_run)
+                session.commit()
+                
+    # Signal the end of logging
+    q.put(None)
+
+def start_paper_run(papers_to_process: List[Dict[str, str]], emails_fetched: int = 0) -> Run:
+    """
+    Creates a Run entry in the DB, launches the thread runner, and initializes the log queue.
+    """
+    with Session(engine) as session:
+        db_run = Run(
+            status="running",
+            emails_fetched=emails_fetched
+        )
+        session.add(db_run)
+        session.commit()
+        session.refresh(db_run)
+        
+        run_id = db_run.id
+        
+    q = queue.Queue()
+    active_logs[run_id] = q
+    
+    t = threading.Thread(
+        target=run_paper_processing_task,
+        args=(run_id, papers_to_process, q)
+    )
+    t.start()
+    
+    return db_run
