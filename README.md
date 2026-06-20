@@ -1,4 +1,4 @@
-# Scholar Summary Agent (Prototype)
+# Scholar Summary Agent
 
 An autonomous prototype AI agent built using `aisuite` that retrieves Google Alerts from your Gmail account, extracts paper texts (supporting direct HTML scraping and PDF parsing), analyzes them using a locally hosted LLM in LM Studio, and maintains/refines your researcher interests profile dynamically based on your feedback.
 
@@ -87,4 +87,12 @@ Test the text retriever, summarizer, and profile feedback flow on a specific pap
 
 ```bash
 uv run python main.py --url https://arxiv.org/abs/2304.00001
+```
+
+# Web UI Version
+
+Run a web UI (100% Gemini built) that does the same as above but keeps track of all analysis and allow easy loading of models with LM Studio.
+
+```bash
+uv run python run_web.py
 ```
