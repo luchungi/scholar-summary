@@ -25,6 +25,42 @@ def clean_llm_markdown(text):
         lines = lines[:-1]
     return "\n".join(lines).strip()
 
+def extract_paper_title(paper_text):
+    """
+    Prompts the local LLM to extract the paper title from the paper text.
+    """
+    print(f"Extracting paper title using model: {config.LM_STUDIO_MODEL}...")
+    snippet = paper_text[:3000]
+    system_prompt = (
+        "You are a helpful assistant. Your task is to identify and extract the title of the academic paper "
+        "from the provided text snippet. Respond with ONLY the exact title. Do not include any introductory text, "
+        "quotes, markdown bold, or other formatting. The output should be clean text."
+    )
+    user_prompt = f"""Identify the title of the academic paper from the following text snippet:
+---
+{snippet}
+---
+
+Title:"""
+    try:
+        response = client.chat.completions.create(
+            model=config.LM_STUDIO_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        title = response.choices[0].message.content.strip()
+        if title.startswith('"') and title.endswith('"'):
+            title = title[1:-1].strip()
+        elif title.startswith("'") and title.endswith("'"):
+            title = title[1:-1].strip()
+        title = title.replace("**", "").replace("*", "").strip()
+        return title
+    except Exception as e:
+        print(f"[-] Error extracting paper title: {e}")
+        return None
+
 def generate_paper_report(paper_title, paper_url, paper_text, user_interests):
     """
     Prompts the local LLM to analyze the paper and generate a report.
@@ -53,15 +89,18 @@ Paper Text:
 
 Generate a comprehensive, structured report in markdown and using LaTeX for equations that addresses the following points:
 
-### 1. Rate the quality of the paper on a scale of 1 to 5, with 5 being the highest quality. Provide a brief justification for your rating.
+### 1. Access to full text
+If the paper is behind a paywall or not fully accessible, highlight this to the user
 
-### 2. Relevance to User Interests
+### 2. Rate the quality of the paper on a scale of 1 to 5, with 5 being the highest quality. Provide a brief justification for your rating.
+
+### 3. Relevance to User Interests
 Analyze how this paper connects with the user's interests listed in their profile and give a rating on a scale of 1 to 5 for relevance. Point out specific projects, keywords, or topics that are relevant, and explain why this paper is worth their attention (or why it may not be).
 
-### 3. Key High-Level Ideas
+### 4. Key High-Level Ideas
 Provide a clear, high-level summary of the paper. Explain what problem it solves, the proposed method/architecture, and the key findings or results. Keep it accessible yet detailed enough to capture the technical essence.
 
-### 4. Fit in the Literature & Contributions
+### 5. Fit in the Literature & Contributions
 Explain how the paper fits into the wider academic literature. Identify its core contributions (e.g., novel architecture, improved efficiency, new datasets, or benchmarks) and how it compares to existing approaches.
 
 """
