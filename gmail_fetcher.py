@@ -190,10 +190,10 @@ def fetch_latest_alerts(credentials_path=config.GMAIL_CREDENTIALS_PATH, token_pa
         if html_body:
             links = extract_links_from_html(html_body)
             alerts.append({
+                "id": msg_id,
                 "subject": subject,
                 "date": date,
                 "links": links
             })
-
     print(f"Retrieved {len(alerts)} alert email(s) containing a total of {sum(len(a['links']) for a in alerts)} unique links.")
     return alerts
