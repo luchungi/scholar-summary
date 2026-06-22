@@ -1,0 +1,41 @@
+{
+  "arxiv.org": {
+    "rules": [
+      {
+        "type": "regex_replace",
+        "pattern": "^https?://arxiv\\.org/(abs|html)/(?P<id>[^/]+)",
+        "replacement": "https://arxiv.org/pdf/{id}"
+      }
+    ]
+  },
+  "link.springer.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "jmsrr.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "researchgate.net": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "openreview.net": {
+    "rules": [
+      {
+        "type": "regex_replace",
+        "pattern": "^https?://openreview\\.net/forum\\?id=(?P<id>[^&]+)",
+        "replacement": "https://openreview.net/pdf?id={id}"
+      }
+    ]
+  }
+}
