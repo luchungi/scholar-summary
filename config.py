@@ -21,6 +21,7 @@ LM_STUDIO_API_KEY = os.getenv("LM_STUDIO_API_KEY", "lm-studio")
 # App configs
 INTERESTS_FILE = os.getenv("INTERESTS_FILE", "user_interests.md")
 MAX_EMAIL_FETCH = int(os.getenv("MAX_EMAIL_FETCH", "10"))
+URL_RULES_PATH = os.getenv("URL_RULES_PATH", "./url/rules.json")
 
 # Report Settings
 REPORTS_DIR = os.getenv("REPORTS_DIR", "reports")

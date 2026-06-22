@@ -1,4 +1,5 @@
 import aisuite as ai
+import json
 import config
 
 # Initialize the aisuite Client
@@ -162,3 +163,73 @@ Return ONLY the updated Markdown profile. Do not include any preambles, explanat
         raise ConnectionError(
             f"Failed to communicate with LM Studio to update interests.\nDetails: {e}"
         )
+
+def propose_pdf_rule(url, html_links, error_context=None):
+    """
+    Prompts the local LLM to propose a PDF retrieval rule for a domain based on its HTML links.
+    """
+    print(f"Proposing PDF retrieval rule using model: {config.LM_STUDIO_MODEL}...")
+
+    system_prompt = (
+        "You are an expert Web Scraping and Automation Agent. Your task is to analyze the URL and the list of hyperlinks "
+        "on a web page to propose a rule that extracts the direct PDF download URL.\n"
+        "You must respond with ONLY a valid JSON object matching the rule schema, containing no other explanation or code fences."
+    )
+
+    schema_desc = """
+The rule JSON object must have one of these formats:
+1. Regex replacement rule (if the PDF URL can be derived from the current URL):
+{
+  "type": "regex_replace",
+  "pattern": "^https?://domain\\\\.org/some-path/(?P<id>\\\\d+)",
+  "replacement": "https://domain.org/pdf/{id}"
+}
+
+2. CSS Selector rule (if the PDF URL is present on the page as a link):
+{
+  "type": "css_selector",
+  "selector": "a.download-pdf",
+  "attribute": "href" // optional, defaults to "href"
+}
+
+3. No PDF rule (if the page is paywalled or has no PDF link):
+{
+  "type": "none"
+}
+"""
+
+    user_prompt = f"""Landing Page URL: {url}
+
+Here is a list of links (anchor tags text and hrefs) found on the page:
+---
+{html_links}
+---
+
+{schema_desc}
+"""
+
+    if error_context:
+        user_prompt += f"""
+IMPORTANT: A previous rule attempt failed with the following error/context:
+{error_context}
+Please analyze this error, inspect the link structure again, and propose a DIFFERENT, corrected rule.
+"""
+
+    user_prompt += "\nReturn ONLY the JSON object. Do not wrap it in markdown code block ticks."
+
+    try:
+        response = client.chat.completions.create(
+            model=config.LM_STUDIO_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        raw_output = response.choices[0].message.content.strip()
+        cleaned = clean_llm_markdown(raw_output)
+        rule = json.loads(cleaned)
+        return rule
+    except Exception as e:
+        print(f"[-] Error proposing PDF rule: {e}")
+        raise ValueError(f"Failed to generate valid PDF rule: {e}")
+
