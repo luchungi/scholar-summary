@@ -8,7 +8,57 @@
       }
     ]
   },
+  "biorxiv.org": {
+    "rules": [
+      {
+        "type": "regex_replace",
+        "pattern": "^https?://(?:www\\.)?biorxiv\\.org/content/(?P<doi>10\\.1101/\\d{4}\\.\\d{2}\\.\\d{2}\\.\\d+v?\\d*)",
+        "replacement": "https://www.biorxiv.org/content/{doi}.full.pdf"
+      }
+    ]
+  },
+  "medrxiv.org": {
+    "rules": [
+      {
+        "type": "regex_replace",
+        "pattern": "^https?://(?:www\\.)?medrxiv\\.org/content/(?P<doi>10\\.1101/\\d{4}\\.\\d{2}\\.\\d{2}\\.\\d+v?\\d*)",
+        "replacement": "https://www.medrxiv.org/content/{doi}.full.pdf"
+      }
+    ]
+  },
+  "openreview.net": {
+    "rules": [
+      {
+        "type": "regex_replace",
+        "pattern": "^https?://openreview\\.net/forum\\?id=(?P<id>[^&]+)",
+        "replacement": "https://openreview.net/pdf?id={id}"
+      }
+    ]
+  },
+  "nature.com": {
+    "rules": [
+      {
+        "type": "regex_replace",
+        "pattern": "^https?://(?:www\\.)?nature\\.com/articles/(?P<id>s[a-z0-9-]+)",
+        "replacement": "https://www.nature.com/articles/{id}.pdf"
+      }
+    ]
+  },
   "link.springer.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "sciencedirect.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "ieeexplore.ieee.org": {
     "rules": [
       {
         "type": "none"
@@ -26,15 +76,6 @@
     "rules": [
       {
         "type": "direct"
-      }
-    ]
-  },
-  "openreview.net": {
-    "rules": [
-      {
-        "type": "regex_replace",
-        "pattern": "^https?://openreview\\.net/forum\\?id=(?P<id>[^&]+)",
-        "replacement": "https://openreview.net/pdf?id={id}"
       }
     ]
   }
