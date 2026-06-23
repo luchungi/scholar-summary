@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -24,8 +24,10 @@ from backend.services import (
     start_paper_run,
     active_logs
 )
+import agent
+import paper_retriever
 from agent import update_user_interests
-from main import ensure_interests_file
+from main import ensure_interests_file, sanitize_filename
 
 # Create FastAPI app
 app = FastAPI(title="Scholar Summary Agent Web API")
@@ -198,6 +200,39 @@ def list_reports(session: Session = Depends(get_session)):
     """
     stmt = select(Paper).where(Paper.status == "success").order_by(Paper.date_processed.desc())
     return session.exec(stmt).all()
+
+@app.post("/api/reports/upload")
+def upload_pdf(file: UploadFile = File(...)):
+    """
+    Accepts an uploaded PDF file, saves it to a temp directory, and triggers
+    an asynchronous background Run, returning the run_id.
+    """
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+        
+    try:
+        # Create temporary directory inside REPORTS_DIR if not exists
+        temp_dir = Path(config.REPORTS_DIR) / "temp_uploads"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Save temp file
+        temp_filepath = temp_dir / f"upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
+        with open(temp_filepath, "wb") as f:
+            f.write(file.file.read())
+            
+        # Start background run
+        from backend.services import start_uploaded_paper_run
+        db_run = start_uploaded_paper_run(str(temp_filepath), file.filename)
+        
+        return {
+            "status": "success",
+            "run_id": db_run.id
+        }
+        
+    except Exception as e:
+        print(f"[-] Error initiating file upload run: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/reports/{paper_id}")
 def get_report(paper_id: int, session: Session = Depends(get_session)):
