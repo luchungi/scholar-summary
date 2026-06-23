@@ -3,7 +3,7 @@ import sys
 import queue
 import io
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -13,6 +13,59 @@ from urllib.parse import urlparse
 from sqlmodel import Session, select
 from backend.models import Run, Paper, EmailAlert
 from backend.database import engine
+import re
+
+def extract_ratings(content: str):
+    quality_rating = None
+    relevance_rating = None
+
+    sections = re.split(r'^(?=#{1,4}\s+)', content, flags=re.MULTILINE)
+
+    for sec in sections:
+        lines = sec.splitlines()
+        first_line = lines[0] if lines else ''
+        if re.search(r'quality\s+rating', first_line, re.IGNORECASE):
+            match_in_header = re.search(r'(?:rating:?\s*)?\*?\*?\s*([0-9.]+)\s*/\s*5', first_line, re.IGNORECASE)
+            if match_in_header:
+                quality_rating = float(match_in_header.group(1))
+            else:
+                match_in_body = re.search(r'\*\*Rating:\s*([0-9.]+)\s*/\s*5', sec, re.IGNORECASE)
+                if not match_in_body:
+                    match_in_body = re.search(r'rating:\s*([0-9.]+)\s*/\s*5', sec, re.IGNORECASE)
+                if match_in_body:
+                    quality_rating = float(match_in_body.group(1))
+
+        elif re.search(r'relevance\s+(?:to\s+)?user\s+interests|relevance\s+rating', first_line, re.IGNORECASE):
+            match_in_header = re.search(r'(?:rating:?\s*)?\*?\*?\s*([0-9.]+)\s*/\s*5', first_line, re.IGNORECASE)
+            if match_in_header:
+                relevance_rating = float(match_in_header.group(1))
+            else:
+                match_in_body = re.search(r'\*\*Relevance Rating:\s*([0-9.]+)\s*/\s*5', sec, re.IGNORECASE)
+                if not match_in_body:
+                    match_in_body = re.search(r'\*\*Rating:\s*([0-9.]+)\s*/\s*5', sec, re.IGNORECASE)
+                if not match_in_body:
+                    match_in_body = re.search(r'relevance rating:\s*([0-9.]+)\s*/\s*5', sec, re.IGNORECASE)
+                if not match_in_body:
+                    match_in_body = re.search(r'rating:\s*([0-9.]+)\s*/\s*5', sec, re.IGNORECASE)
+                if match_in_body:
+                    relevance_rating = float(match_in_body.group(1))
+
+    # Global fallback if not found in sections
+    if quality_rating is None:
+        match = re.search(r'\*\*Rating:\s*([0-9.]+)\s*/\s*5', content, re.IGNORECASE)
+        if match:
+            quality_rating = float(match.group(1))
+
+    if relevance_rating is None:
+        match = re.search(r'\*\*Relevance Rating:\s*([0-9.]+)\s*/\s*5', content, re.IGNORECASE)
+        if match:
+            relevance_rating = float(match.group(1))
+        else:
+            all_ratings = re.findall(r'\*\*Rating:\s*([0-9.]+)\s*/\s*5', content, re.IGNORECASE)
+            if len(all_ratings) >= 2:
+                relevance_rating = float(all_ratings[1])
+
+    return quality_rating, relevance_rating
 
 # Import original components from root folder
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -21,10 +74,10 @@ import gmail_fetcher
 import paper_retriever
 import agent
 from main import (
-    ensure_interests_file, 
-    sanitize_filename, 
-    print_diff, 
-    normalize_url, 
+    ensure_interests_file,
+    sanitize_filename,
+    print_diff,
+    normalize_url,
     remove_duplicate_links
 )
 
@@ -71,10 +124,10 @@ def get_latest_alerts_from_gmail() -> List[Dict[str, Any]]:
         token_path=config.GMAIL_TOKEN_PATH,
         limit=config.MAX_EMAIL_FETCH
     )
-    
+
     # Normalize URLs and deduplicate links across emails
     raw_alerts = remove_duplicate_links(raw_alerts)
-    
+
     new_alerts = []
     with Session(engine) as session:
         for alert in raw_alerts:
@@ -91,7 +144,7 @@ def get_latest_alerts_from_gmail() -> List[Dict[str, Any]]:
                 session.add(db_alert)
                 new_alerts.append(alert)
         session.commit()
-    
+
     return raw_alerts
 
 def extract_web_page_title(url: str) -> Optional[str]:
@@ -102,7 +155,7 @@ def extract_web_page_title(url: str) -> Optional[str]:
     try:
         resolved = paper_retriever.resolve_url(url)
         parsed = urlparse(resolved)
-        
+
         # Special case for arXiv PDF: convert /pdf/... to /abs/... to parse the title
         if "arxiv.org" in parsed.netloc and "/pdf/" in parsed.path:
             abs_path = parsed.path.replace("/pdf/", "/abs/")
@@ -110,7 +163,7 @@ def extract_web_page_title(url: str) -> Optional[str]:
             if abs_path.endswith(".pdf"):
                 abs_path = abs_path[:-4]
             abs_url = f"https://arxiv.org{abs_path}"
-            
+
             res = requests.get(abs_url, headers=paper_retriever.HEADERS, timeout=10)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, "html.parser")
@@ -118,7 +171,7 @@ def extract_web_page_title(url: str) -> Optional[str]:
                 if title_el:
                     # Remove "Title:" prefix
                     return title_el.text.replace("Title:", "").strip()
-                    
+
         # General case
         res = requests.get(resolved, headers=paper_retriever.HEADERS, timeout=10)
         if res.status_code == 200:
@@ -130,8 +183,8 @@ def extract_web_page_title(url: str) -> Optional[str]:
     return None
 
 def run_paper_processing_task(
-    run_id: int, 
-    papers_to_process: List[Dict[str, str]], 
+    run_id: int,
+    papers_to_process: List[Dict[str, str]],
     q: queue.Queue
 ):
     """
@@ -141,32 +194,32 @@ def run_paper_processing_task(
     with LogCapture(q):
         print(f"[+] Starting paper processing run {run_id} at {datetime.now()}")
         print(f"[+] Papers to process: {len(papers_to_process)}")
-        
+
         success_count = 0
         failure_count = 0
-        
+
         # Load user interests
         try:
             current_interests = ensure_interests_file()
         except Exception as e:
             print(f"[-] Error loading user interests: {e}")
             current_interests = ""
-            
+
         for idx, paper_info in enumerate(papers_to_process, 1):
             title = paper_info.get("title", "").strip()
             url = paper_info.get("url")
-            
+
             print("\n" + "=" * 60)
             print(f"[{idx}/{len(papers_to_process)}] Fetching paper text for URL: {url}")
             print("=" * 60)
-            
+
             # Fetch text
             paper_text = None
             try:
                 paper_text = paper_retriever.retrieve_paper_text(url)
             except Exception as e:
                 print(f"[-] Error retrieving paper: {e}")
-                
+
             if not paper_text:
                 print("[-] Skipping paper: could not retrieve text.")
                 failure_count += 1
@@ -174,10 +227,9 @@ def run_paper_processing_task(
                     db_title = title
                     if not db_title or db_title in ("Manual URL Analysis", "Manual Input Paper", "Untitled"):
                         db_title = extract_web_page_title(url) or "Manual Input Paper"
-                        
-                    # Check if this exact paper title & url is already listed as failed
+
+                    # Check if this paper URL is already listed as failed (match by URL only)
                     stmt = select(Paper).where(
-                        Paper.title == db_title,
                         Paper.url == url,
                         Paper.status == "failed"
                     )
@@ -191,12 +243,13 @@ def run_paper_processing_task(
                         )
                         session.add(db_paper)
                     else:
-                        existing_failed.date_processed = datetime.utcnow()
+                        existing_failed.title = db_title  # Update title if refined
+                        existing_failed.date_processed = datetime.now(timezone.utc).replace(tzinfo=None)
                         existing_failed.run_id = run_id
                         session.add(existing_failed)
                     session.commit()
                 continue
-                
+
             # If the title is generic, auto-extract the paper title
             if not title or title in ("Manual URL Analysis", "Manual Input Paper", "Untitled"):
                 print(f"[*] Title is generic. Extracting title from paper text using LLM...")
@@ -215,39 +268,51 @@ def run_paper_processing_task(
 
             print(f"[+] Processing paper: {title}")
             print(f"[+] Retrieved {len(paper_text)} characters of text.")
-            
+
             # Generate summary report using LM Studio LLM
             try:
                 report = agent.generate_paper_report(title, url, paper_text, current_interests)
                 report = f"# {title}\n\n**Link**: [{url}]({url})\n\n---\n\n" + report
-                
+
                 # Save markdown file
                 os.makedirs(config.REPORTS_DIR, exist_ok=True)
                 safe_title = sanitize_filename(title)
                 report_path = Path(config.REPORTS_DIR) / f"report_{safe_title}.md"
                 report_path.write_text(report, encoding="utf-8")
-                
+
                 print(f"[+] Report saved to {report_path}")
                 success_count += 1
-                
+
                 # Save to database
+                q_val, r_val = extract_ratings(report)
                 with Session(engine) as session:
                     db_paper = Paper(
                         title=title,
                         url=url,
                         status="success",
                         report_path=str(report_path),
-                        run_id=run_id
+                        run_id=run_id,
+                        quality_rating=q_val,
+                        relevance_rating=r_val
                     )
                     session.add(db_paper)
+
+                    # Delete any previous failed records for this URL
+                    stmt = select(Paper).where(
+                        Paper.url == url,
+                        Paper.status == "failed"
+                    )
+                    for existing in session.exec(stmt).all():
+                        session.delete(existing)
+
                     session.commit()
-                    
+
             except Exception as e:
                 print(f"[-] Error generating report: {e}")
                 failure_count += 1
                 with Session(engine) as session:
+                    # Match by URL only
                     stmt = select(Paper).where(
-                        Paper.title == title,
                         Paper.url == url,
                         Paper.status == "failed"
                     )
@@ -261,11 +326,12 @@ def run_paper_processing_task(
                         )
                         session.add(db_paper)
                     else:
-                        existing_failed.date_processed = datetime.utcnow()
+                        existing_failed.title = title
+                        existing_failed.date_processed = datetime.now(timezone.utc).replace(tzinfo=None)
                         existing_failed.run_id = run_id
                         session.add(existing_failed)
                     session.commit()
-        
+
         # Complete run updates
         print(f"\n[+] Run {run_id} finished! Succeeded: {success_count}, Failed: {failure_count}")
         with Session(engine) as session:
@@ -276,7 +342,7 @@ def run_paper_processing_task(
                 db_run.papers_failed = failure_count
                 session.add(db_run)
                 session.commit()
-                
+
     # Signal the end of logging
     q.put(None)
 
@@ -292,16 +358,16 @@ def start_paper_run(papers_to_process: List[Dict[str, str]], emails_fetched: int
         session.add(db_run)
         session.commit()
         session.refresh(db_run)
-        
+
         run_id = db_run.id
-        
+
     q = queue.Queue()
     active_logs[run_id] = q
-    
+
     t = threading.Thread(
         target=run_paper_processing_task,
         args=(run_id, papers_to_process, q)
     )
     t.start()
-    
+
     return db_run
