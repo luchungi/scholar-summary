@@ -40,13 +40,28 @@ export default function App() {
 
   const API_URL = import.meta.env.DEV ? 'http://localhost:8000' : '';
 
-    // Model Manager state
+  // Model Manager state
   const [models, setModels] = useState<{ key: string; size: string; loaded: boolean }[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [loadingModels, setLoadingModels] = useState(false);
   const [switchingModel, setSwitchingModel] = useState(false);
   const [showModelLoadTerminal, setShowModelLoadTerminal] = useState(false);
   const [modelToLoad, setModelToLoad] = useState('');
+  const [serverStatus, setServerStatus] = useState<'ON' | 'OFF' | 'loading' | 'error'>('loading');
+
+  const fetchServerStatus = async (skipIfLoading = false) => {
+    if (skipIfLoading && serverStatus === 'loading') return;
+    try {
+      const res = await fetch(`${API_URL}/api/server/status`);
+      const data = await res.json();
+      setServerStatus(data.status);
+      return data.status;
+    } catch (e) {
+      console.error('Error fetching server status:', e);
+      setServerStatus('error');
+      return 'error';
+    }
+  };
 
   const fetchModels = async () => {
     setLoadingModels(true);
@@ -68,8 +83,46 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchModels();
+    const init = async () => {
+      const status = await fetchServerStatus();
+      if (status === 'ON') {
+        fetchModels();
+      } else {
+        setModels([]);
+        setSelectedModel('none');
+      }
+    };
+    init();
+
+    const interval = setInterval(() => fetchServerStatus(true), 5000);
+    return () => clearInterval(interval);
   }, []);
+
+  const handleToggleServer = async () => {
+    const isCurrentlyOn = serverStatus === 'ON';
+    setServerStatus('loading');
+    try {
+      const endpoint = isCurrentlyOn ? '/api/server/stop' : '/api/server/start';
+      const res = await fetch(`${API_URL}${endpoint}`, { method: 'POST' });
+      if (res.ok) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const status = await fetchServerStatus();
+        if (status === 'ON') {
+          fetchModels();
+        } else {
+          setModels([]);
+          setSelectedModel('none');
+        }
+      } else {
+        alert(`Failed to ${isCurrentlyOn ? 'stop' : 'start'} server.`);
+        fetchServerStatus();
+      }
+    } catch (e) {
+      console.error(e);
+      alert(`Error toggling server: ${e}`);
+      fetchServerStatus();
+    }
+  };
 
   const handleLoadModel = () => {
     if (!selectedModel) return;
@@ -191,40 +244,66 @@ export default function App() {
             <Cpu size={14} className="text-purple-400" />
             <span>LM Studio Model</span>
           </div>
-          {loadingModels ? (
-            <div className="model-loading-text">Loading model list...</div>
-          ) : models.length === 0 ? (
-            <div className="model-loading-text">No models found</div>
+
+          <div className="server-status-container">
+            <div className="server-status-info">
+              <span className="server-status-label">Server:</span>
+              <div className="flex items-center gap-1.5" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <div className={`status-indicator-dot ${serverStatus.toLowerCase()}`}></div>
+                <span className={`server-status-val ${serverStatus.toLowerCase()}`}>
+                  {serverStatus}
+                </span>
+              </div>
+            </div>
+            <button
+              onClick={handleToggleServer}
+              disabled={serverStatus === 'loading'}
+              className={`btn btn-server-toggle ${serverStatus === 'ON' ? 'stop' : 'start'}`}
+            >
+              {serverStatus === 'loading' ? 'Updating...' : (serverStatus === 'ON' ? 'Stop Server' : 'Start Server')}
+            </button>
+          </div>
+
+          {serverStatus === 'ON' ? (
+            loadingModels ? (
+              <div className="model-loading-text">Loading model list...</div>
+            ) : models.length === 0 ? (
+              <div className="model-loading-text">No models found</div>
+            ) : (
+              <div className="model-select-container">
+                <select
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className="model-select"
+                  disabled={showModelLoadTerminal}
+                >
+                  <option value="none">None (No Model Loaded)</option>
+                  {models.map((model) => (
+                    <option key={model.key} value={model.key}>
+                      {model.key} ({model.size}){model.loaded ? ' (Loaded)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleLoadModel}
+                  className="btn btn-secondary btn-load-model"
+                  disabled={showModelLoadTerminal || !selectedModel || (selectedModel === 'none' && !models.some(m => m.loaded))}
+                >
+                  {selectedModel === 'none' ? 'Unload Model' : (showModelLoadTerminal ? 'Loading...' : 'Load Model')}
+                </button>
+              </div>
+            )
           ) : (
-            <div className="model-select-container">
-              <select
-                value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                className="model-select"
-                disabled={showModelLoadTerminal}
-              >
-                <option value="none">None (No Model Loaded)</option>
-                {models.map((model) => (
-                  <option key={model.key} value={model.key}>
-                    {model.key} ({model.size}){model.loaded ? ' (Loaded)' : ''}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={handleLoadModel}
-                className="btn btn-secondary btn-load-model"
-                disabled={showModelLoadTerminal || !selectedModel || (selectedModel === 'none' && !models.some(m => m.loaded))}
-              >
-                {selectedModel === 'none' ? 'Unload Model' : (showModelLoadTerminal ? 'Loading...' : 'Load Model')}
-              </button>
+            <div className="server-offline-msg">
+              Start the LM Studio server to manage and load models.
             </div>
           )}
         </div>
 
         <div className="sidebar-footer">
           <div className="system-indicator">
-            <div className="indicator-dot online"></div>
-            <span>LLM Server (LM Studio) Connected</span>
+            <div className={`indicator-dot ${serverStatus === 'ON' ? 'online' : 'offline'}`}></div>
+            <span>LLM Server {serverStatus === 'ON' ? 'Online' : 'Offline'}</span>
           </div>
         </div>
       </aside>
@@ -241,6 +320,10 @@ export default function App() {
                 setShowPreview(true);
               }}
               onSelectTab={navigateToTab}
+              onUploadStarted={(runId) => {
+                setActiveRunId(runId);
+                setShowLogs(true);
+              }}
             />
           )}
 
@@ -436,6 +519,115 @@ export default function App() {
         .indicator-dot.online {
           background: var(--accent-green);
           box-shadow: 0 0 8px var(--accent-green);
+        }
+        .indicator-dot.offline {
+          background: var(--text-dark);
+        }
+        .server-status-container {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          background: rgba(255, 255, 255, 0.02);
+          border: 1px solid var(--border-color);
+          border-radius: 8px;
+          padding: 10px;
+          margin-bottom: 8px;
+        }
+        .server-status-info {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          font-size: 11px;
+        }
+        .server-status-label {
+          color: var(--text-muted);
+          font-weight: 500;
+        }
+        .server-status-val {
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          font-size: 11px;
+        }
+        .server-status-val.on {
+          color: var(--accent-green);
+        }
+        .server-status-val.off {
+          color: var(--text-dark);
+        }
+        .server-status-val.loading {
+          color: #c084fc;
+        }
+        .server-status-val.error {
+          color: var(--accent-red);
+        }
+        .status-indicator-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+        }
+        .status-indicator-dot.on {
+          background: var(--accent-green);
+          box-shadow: 0 0 8px var(--accent-green);
+        }
+        .status-indicator-dot.off {
+          background: var(--text-dark);
+        }
+        .status-indicator-dot.loading {
+          background: #c084fc;
+          animation: pulse 1.5s infinite;
+        }
+        .status-indicator-dot.error {
+          background: var(--accent-red);
+          box-shadow: 0 0 8px var(--accent-red);
+        }
+        .btn-server-toggle {
+          font-size: 10px;
+          padding: 6px 12px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.03em;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          width: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border: 1px solid transparent;
+        }
+        .btn-server-toggle.start {
+          background: rgba(16, 185, 129, 0.1);
+          color: #34d399;
+          border-color: rgba(16, 185, 129, 0.2);
+        }
+        .btn-server-toggle.start:hover:not(:disabled) {
+          background: rgba(16, 185, 129, 0.2);
+          border-color: rgba(16, 185, 129, 0.4);
+          color: #fff;
+        }
+        .btn-server-toggle.stop {
+          background: rgba(244, 63, 94, 0.1);
+          color: #fb7185;
+          border-color: rgba(244, 63, 94, 0.2);
+        }
+        .btn-server-toggle.stop:hover:not(:disabled) {
+          background: rgba(244, 63, 94, 0.2);
+          border-color: rgba(244, 63, 94, 0.4);
+          color: #fff;
+        }
+        .btn-server-toggle:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+        .server-offline-msg {
+          font-size: 11px;
+          color: var(--text-dark);
+          line-height: 1.4;
+          font-style: italic;
+          padding: 6px 8px;
+          border-left: 2px solid var(--border-color);
+          margin-top: 4px;
         }
         .main-viewport {
           flex: 1;

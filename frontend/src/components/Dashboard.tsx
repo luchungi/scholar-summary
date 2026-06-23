@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Mail, Link, AlertTriangle, CheckCircle, Activity, Loader, Database, Search } from 'lucide-react';
+import { Mail, Link, AlertTriangle, CheckCircle, Activity, Loader, Database, Search, Upload } from 'lucide-react';
 
 interface PaperItem {
   title: string;
@@ -10,9 +10,10 @@ interface DashboardProps {
   onStartSync: (papers: PaperItem[], emailsFetched: number) => void;
   onOpenPreview: (alerts: any[]) => void;
   onSelectTab: (tab: string) => void;
+  onUploadStarted?: (runId: number) => void;
 }
 
-export default function Dashboard({ onStartSync, onOpenPreview, onSelectTab }: DashboardProps) {
+export default function Dashboard({ onStartSync, onOpenPreview, onSelectTab, onUploadStarted }: DashboardProps) {
   const [stats, setStats] = useState({
     totalPapers: 0,
     totalRuns: 0,
@@ -24,10 +25,45 @@ export default function Dashboard({ onStartSync, onOpenPreview, onSelectTab }: D
   const [loadingStats, setLoadingStats] = useState(true);
   const [fetchingGmail, setFetchingGmail] = useState(false);
   
-  // Manual URL state
+  // Manual URL/File state
+  const [analysisMode, setAnalysisMode] = useState<'url' | 'file'>('url');
+  const [uploading, setUploading] = useState(false);
   const [manualUrl, setManualUrl] = useState('');
   const [manualTitle, setManualTitle] = useState('');
   const [manualRunning, setManualRunning] = useState(false);
+
+  const handleFileUpload = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      alert('Only PDF files are supported.');
+      return;
+    }
+    
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const res = await fetch(`${API_URL}/api/reports/upload`, {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      
+      const data = await res.json();
+      if (data.status === 'success') {
+        if (onUploadStarted) {
+          onUploadStarted(data.run_id);
+        }
+      }
+    } catch (e: any) {
+      alert(`Error uploading file: ${e.message || e}`);
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const API_URL = import.meta.env.DEV ? 'http://localhost:8000' : '';
 
@@ -171,33 +207,98 @@ export default function Dashboard({ onStartSync, onOpenPreview, onSelectTab }: D
           </button>
         </div>
 
-        {/* Manual URL Input */}
+        {/* Manual Input (URL or Upload) */}
         <div className="manual-card glass-panel">
           <h3>Direct Paper Analysis</h3>
-          <p>Analyze any single academic paper (arXiv abstract/PDF or web URL) directly and evaluate it against your profile.</p>
-          <form onSubmit={handleManualAnalyze} className="manual-form">
-            <input
-              type="text"
-              placeholder="Paper Title (optional, e.g. Attention is All You Need)"
-              value={manualTitle}
-              onChange={(e) => setManualTitle(e.target.value)}
-              className="glass-input"
-            />
-            <div className="url-input-row">
+          <p>Analyze any single academic paper directly by URL or upload a PDF to evaluate it against your profile.</p>
+          
+          <div className="tab-toggle">
+            <button
+              type="button"
+              className={`tab-toggle-btn ${analysisMode === 'url' ? 'active' : ''}`}
+              onClick={() => setAnalysisMode('url')}
+            >
+              <Link size={14} /> URL Link
+            </button>
+            <button
+              type="button"
+              className={`tab-toggle-btn ${analysisMode === 'file' ? 'active' : ''}`}
+              onClick={() => setAnalysisMode('file')}
+            >
+              <Upload size={14} /> PDF File
+            </button>
+          </div>
+
+          {analysisMode === 'url' ? (
+            <form onSubmit={handleManualAnalyze} className="manual-form">
               <input
-                type="url"
-                placeholder="https://arxiv.org/abs/2304.00001"
-                value={manualUrl}
-                onChange={(e) => setManualUrl(e.target.value)}
-                className="glass-input flex-1"
-                required
+                type="text"
+                placeholder="Paper Title (optional, e.g. Attention is All You Need)"
+                value={manualTitle}
+                onChange={(e) => setManualTitle(e.target.value)}
+                className="glass-input"
               />
-              <button type="submit" className="btn btn-secondary" disabled={manualRunning}>
-                {manualRunning ? <Loader className="animate-spin" size={16} /> : <Search size={16} />}
-                Analyze
-              </button>
+              <div className="url-input-row">
+                <input
+                  type="url"
+                  placeholder="https://arxiv.org/abs/2304.00001"
+                  value={manualUrl}
+                  onChange={(e) => setManualUrl(e.target.value)}
+                  className="glass-input flex-1"
+                  required
+                />
+                <button type="submit" className="btn btn-secondary" disabled={manualRunning}>
+                  {manualRunning ? <Loader className="animate-spin" size={16} /> : <Search size={16} />}
+                  Analyze
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div 
+              className={`dropzone glass-panel ${uploading ? 'loading' : ''}`}
+              onClick={() => !uploading && document.getElementById('file-input')?.click()}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.currentTarget.classList.add('dragover');
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove('dragover');
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove('dragover');
+                if (uploading) return;
+                const file = e.dataTransfer.files[0];
+                if (file) handleFileUpload(file);
+              }}
+            >
+              <input
+                id="file-input"
+                type="file"
+                accept=".pdf"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleFileUpload(file);
+                }}
+                style={{ display: 'none' }}
+                disabled={uploading}
+              />
+              {uploading ? (
+                <div className="upload-loading">
+                  <Loader className="animate-spin text-purple-400" size={32} />
+                  <p>Uploading and analyzing paper...</p>
+                  <span>This might take 10-15 seconds for LLM analysis.</span>
+                </div>
+              ) : (
+                <div className="upload-prompt">
+                  <Upload size={32} className="text-purple-400" />
+                  <p>Drag & drop PDF here, or <strong>browse files</strong></p>
+                  <span>Only .pdf files are supported</span>
+                </div>
+              )}
             </div>
-          </form>
+          )}
         </div>
       </div>
 
@@ -341,11 +442,77 @@ export default function Dashboard({ onStartSync, onOpenPreview, onSelectTab }: D
           line-height: 1.5;
           flex: 1;
         }
+        .tab-toggle {
+          display: flex;
+          gap: 8px;
+          margin-bottom: 4px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+          padding-bottom: 8px;
+        }
+        .tab-toggle-btn {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 13px;
+          font-family: var(--font-display);
+          font-weight: 500;
+          color: var(--text-muted);
+          background: none;
+          border: none;
+          padding: 6px 12px;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+        .tab-toggle-btn:hover {
+          color: #fff;
+          background: rgba(255, 255, 255, 0.03);
+        }
+        .tab-toggle-btn.active {
+          color: #fff;
+          background: rgba(124, 58, 237, 0.1);
+          border: 1px solid rgba(124, 58, 237, 0.2);
+        }
+        .dropzone {
+          border: 2px dashed rgba(124, 58, 237, 0.3);
+          border-radius: 12px;
+          padding: 30px 20px;
+          text-align: center;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          background: rgba(124, 58, 237, 0.02) !important;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          min-height: 140px;
+          margin-top: 6px;
+        }
+        .dropzone:hover, .dropzone.dragover {
+          border-color: var(--accent-purple);
+          background: rgba(124, 58, 237, 0.05) !important;
+          box-shadow: 0 4px 20px rgba(124, 58, 237, 0.1);
+        }
+        .upload-prompt, .upload-loading {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 8px;
+        }
+        .upload-prompt p, .upload-loading p {
+          font-size: 14px;
+          color: #fff;
+          margin: 0;
+        }
+        .upload-prompt span, .upload-loading span {
+          font-size: 11px;
+          color: var(--text-muted);
+        }
         .manual-form {
           display: flex;
           flex-direction: column;
           gap: 10px;
-          margin-top: 6px;
+          margin-top: 12px;
         }
         .url-input-row {
           display: flex;

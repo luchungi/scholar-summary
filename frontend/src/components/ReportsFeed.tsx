@@ -7,7 +7,16 @@ interface PaperReport {
   url: string;
   date_processed: string;
   report_path: string;
+  quality_rating?: number;
+  relevance_rating?: number;
 }
+
+const getRatingClass = (rating?: number): string => {
+  if (rating === undefined || rating === null) return 'rating-na';
+  if (rating >= 4.5) return 'rating-high';
+  if (rating >= 3.5) return 'rating-medium';
+  return 'rating-low';
+};
 
 interface ReportsFeedProps {
   onSelectReport: (reportId: number) => void;
@@ -17,6 +26,8 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
   const [reports, setReports] = useState<PaperReport[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
+  const [sortBy, setSortBy] = useState<'quality' | 'relevance'>('quality');
+  const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
 
   const API_URL = import.meta.env.DEV ? 'http://localhost:8000' : '';
 
@@ -54,10 +65,52 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
     }
   };
 
+  const handleSort = (field: 'quality' | 'relevance') => {
+    if (sortBy === field) {
+      setSortDir(sortDir === 'desc' ? 'asc' : 'desc');
+    } else {
+      setSortBy(field);
+      setSortDir('desc');
+    }
+  };
+
   const filteredReports = reports.filter((report) => {
     const titleMatch = report.title.toLowerCase().includes(searchQuery.toLowerCase());
     const urlMatch = report.url.toLowerCase().includes(searchQuery.toLowerCase());
     return titleMatch || urlMatch;
+  });
+
+  // Group filtered reports by date (YYYY-MM-DD)
+  const groups: { [key: string]: { label: string; date: Date; papers: PaperReport[] } } = {};
+  filteredReports.forEach((report) => {
+    if (!report.date_processed) return;
+    const dateObj = new Date(report.date_processed);
+    const yyyymmdd = dateObj.toISOString().split('T')[0];
+    if (!groups[yyyymmdd]) {
+      const label = dateObj.toLocaleDateString(undefined, { dateStyle: 'long' });
+      groups[yyyymmdd] = {
+        label,
+        date: dateObj,
+        papers: []
+      };
+    }
+    groups[yyyymmdd].papers.push(report);
+  });
+
+  // Sort dates descending (newest on top)
+  const sortedDateKeys = Object.keys(groups).sort((a, b) => b.localeCompare(a));
+
+  // Sort papers within each date group
+  sortedDateKeys.forEach((key) => {
+    groups[key].papers.sort((a, b) => {
+      const valA = sortBy === 'quality' ? (a.quality_rating ?? 0) : (a.relevance_rating ?? 0);
+      const valB = sortBy === 'quality' ? (b.quality_rating ?? 0) : (b.relevance_rating ?? 0);
+      
+      if (valA === valB) {
+        return a.title.localeCompare(b.title);
+      }
+      return sortDir === 'desc' ? valB - valA : valA - valB;
+    });
   });
 
   return (
@@ -92,51 +145,104 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
             <p>{searchQuery ? 'Try adjusting your search keywords.' : 'No papers have been successfully processed yet.'}</p>
           </div>
         ) : (
-          <div className="reports-grid">
-            {filteredReports.map((report) => (
-              <div
-                key={report.id}
-                className="report-card glass-panel"
-                onClick={() => onSelectReport(report.id)}
-              >
-                <div className="report-card-body">
-                  <div className="flex justify-between items-start">
-                    <span className="report-badge">Report #{report.id}</span>
-                    <button 
-                      className="delete-report-btn" 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(report.id);
-                      }}
-                      title="Delete Report"
-                    >
-                      <Trash size={14} />
-                    </button>
+          <div className="reports-tables-container">
+            {sortedDateKeys.map((dateKey) => {
+              const group = groups[dateKey];
+              return (
+                <div key={dateKey} className="date-group-section">
+                  <div className="date-group-header">
+                    <Calendar size={16} className="date-group-icon" />
+                    <h3>{group.label}</h3>
+                    <span className="papers-count-badge">{group.papers.length} {group.papers.length === 1 ? 'paper' : 'papers'}</span>
                   </div>
-                  <h3 className="report-title-text">{report.title}</h3>
-                  <a
-                    href={report.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="report-url-link"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <LinkIcon size={12} />
-                    {report.url}
-                  </a>
-                </div>
-                <div className="report-card-footer">
-                  <div className="date-info">
-                    <Calendar size={14} className="calendar-icon" />
-                    <span>{new Date(report.date_processed).toLocaleDateString(undefined, { dateStyle: 'medium' })}</span>
+                  
+                  <div className="table-wrapper glass-panel">
+                    <table className="reports-table">
+                      <thead>
+                        <tr>
+                          <th className="th-title">Title of the Paper</th>
+                          <th 
+                            className={`th-rating sortable ${sortBy === 'quality' ? 'active' : ''}`}
+                            onClick={() => handleSort('quality')}
+                          >
+                            <div className="th-content">
+                              <span>Quality Rating</span>
+                              <span className="sort-arrow">
+                                {sortBy === 'quality' ? (sortDir === 'desc' ? ' ▼' : ' ▲') : ''}
+                              </span>
+                            </div>
+                          </th>
+                          <th 
+                            className={`th-rating sortable ${sortBy === 'relevance' ? 'active' : ''}`}
+                            onClick={() => handleSort('relevance')}
+                          >
+                            <div className="th-content">
+                              <span>Relevancy Rating</span>
+                              <span className="sort-arrow">
+                                {sortBy === 'relevance' ? (sortDir === 'desc' ? ' ▼' : ' ▲') : ''}
+                              </span>
+                            </div>
+                          </th>
+                          <th className="th-link">Link</th>
+                          <th className="th-actions">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {group.papers.map((paper) => (
+                          <tr key={paper.id} className="table-row">
+                            <td className="td-title">
+                              <button 
+                                className="paper-title-link"
+                                onClick={() => onSelectReport(paper.id)}
+                              >
+                                {paper.title}
+                              </button>
+                            </td>
+                            <td className="td-rating">
+                              <span className={`rating-badge ${getRatingClass(paper.quality_rating)}`}>
+                                {paper.quality_rating !== undefined && paper.quality_rating !== null 
+                                  ? paper.quality_rating.toFixed(1) 
+                                  : 'N/A'}
+                              </span>
+                            </td>
+                            <td className="td-rating">
+                              <span className={`rating-badge ${getRatingClass(paper.relevance_rating)}`}>
+                                {paper.relevance_rating !== undefined && paper.relevance_rating !== null 
+                                  ? paper.relevance_rating.toFixed(1) 
+                                  : 'N/A'}
+                              </span>
+                            </td>
+                            <td className="td-link">
+                              <a 
+                                href={paper.url} 
+                                target="_blank" 
+                                rel="noopener noreferrer" 
+                                className="paper-external-link"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                Link
+                              </a>
+                            </td>
+                            <td className="td-actions">
+                              <button 
+                                className="delete-report-btn" 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDelete(paper.id);
+                                }}
+                                title="Delete Report"
+                              >
+                                <Trash size={14} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                  <button className="read-more-btn">
-                    Read Report
-                    <ChevronRight size={14} />
-                  </button>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -252,97 +358,182 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
           font-size: 13px;
           color: var(--text-muted);
         }
-        .reports-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-          gap: 20px;
-        }
-        .report-card {
+        .reports-tables-container {
           display: flex;
           flex-direction: column;
-          height: 220px;
-          cursor: pointer;
-          background: var(--bg-card) !important;
+          gap: 32px;
+          margin-top: 10px;
         }
-        .report-card:hover {
-          transform: translateY(-2px);
-          border-color: rgba(124, 58, 237, 0.25);
-        }
-        .report-card-body {
-          flex: 1;
-          padding: 20px;
+        .date-group-section {
           display: flex;
           flex-direction: column;
-          gap: 10px;
+          gap: 12px;
         }
-        .report-badge {
-          font-family: var(--font-display);
-          font-size: 11px;
+        .date-group-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding-left: 4px;
+        }
+        .date-group-icon {
           color: #a78bfa;
-          background: rgba(124, 58, 237, 0.1);
-          padding: 2px 8px;
-          border-radius: 4px;
-          width: fit-content;
-          font-weight: 500;
         }
-        .report-title-text {
-          font-size: 15px;
+        .date-group-header h3 {
+          font-size: 16px;
           color: #fff;
           font-weight: 600;
-          line-height: 1.4;
-          display: -webkit-box;
-          -webkit-line-clamp: 2;
-          -webkit-box-orient: vertical;
-          overflow: hidden;
+          font-family: var(--font-display);
         }
-        .report-url-link {
+        .papers-count-badge {
           font-size: 11px;
-          color: var(--text-dark);
-          text-decoration: none;
+          color: var(--text-muted);
+          background: rgba(255, 255, 255, 0.05);
+          padding: 2px 8px;
+          border-radius: 20px;
+          font-weight: 500;
+        }
+        .table-wrapper {
+          overflow-x: auto;
+          background: var(--bg-card) !important;
+          border: 1px solid var(--border-color);
+          border-radius: 12px;
+        }
+        .reports-table {
+          width: 100%;
+          border-collapse: collapse;
+          text-align: left;
+          font-size: 13px;
+        }
+        .reports-table th {
+          padding: 14px 18px;
+          font-weight: 600;
+          color: var(--text-muted);
+          font-family: var(--font-display);
+          border-bottom: 1px solid var(--border-color);
+          user-select: none;
+          font-size: 12px;
+          letter-spacing: 0.02em;
+        }
+        .reports-table th.sortable {
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+        .reports-table th.sortable:hover {
+          color: #fff;
+          background: rgba(255, 255, 255, 0.02);
+        }
+        .reports-table th.sortable.active {
+          color: #a78bfa;
+          background: rgba(167, 139, 250, 0.05);
+        }
+        .th-content {
           display: flex;
           align-items: center;
           gap: 4px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-          margin-top: auto;
         }
-        .report-url-link:hover {
-          color: var(--accent-blue);
+        .th-title {
+          width: 50%;
         }
-        .report-card-footer {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 12px 20px;
-          border-top: 1px solid var(--border-color);
-          background: rgba(255, 255, 255, 0.01);
+        .th-rating {
+          width: 18%;
         }
-        .date-info {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 12px;
-          color: var(--text-muted);
+        .th-link {
+          width: 10%;
         }
-        .calendar-icon {
-          color: var(--text-dark);
+        .th-actions {
+          width: 8%;
+          text-align: right;
         }
-        .read-more-btn {
+        .reports-table td {
+          padding: 14px 18px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+          vertical-align: middle;
+          color: var(--text-main);
+        }
+        .table-row {
+          transition: background-color 0.2s ease;
+        }
+        .table-row:hover {
+          background-color: rgba(255, 255, 255, 0.01);
+        }
+        .table-row:last-child td {
+          border-bottom: none;
+        }
+        .td-title {
+          font-weight: 500;
+        }
+        .paper-title-link {
           background: none;
           border: none;
-          color: #a78bfa;
-          font-family: var(--font-display);
-          font-weight: 500;
-          font-size: 12px;
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          cursor: pointer;
-          transition: color 0.2s;
-        }
-        .report-card:hover .read-more-btn {
           color: #fff;
+          text-align: left;
+          font-weight: 500;
+          font-size: 13.5px;
+          cursor: pointer;
+          padding: 0;
+          line-height: 1.4;
+          transition: color 0.15s ease;
+          width: 100%;
+          display: block;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .paper-title-link:hover {
+          color: #a78bfa;
+          text-decoration: none;
+        }
+        .td-rating {
+          font-weight: 600;
+        }
+        .rating-badge {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 4px 10px;
+          border-radius: 6px;
+          font-size: 12px;
+          font-weight: 700;
+          width: 44px;
+        }
+        .rating-high {
+          background: rgba(16, 185, 129, 0.12);
+          color: #34d399;
+          border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+        .rating-medium {
+          background: rgba(245, 158, 11, 0.12);
+          color: #fbbf24;
+          border: 1px solid rgba(245, 158, 11, 0.2);
+        }
+        .rating-low {
+          background: rgba(239, 68, 68, 0.12);
+          color: #f87171;
+          border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+        .rating-na {
+          background: rgba(255, 255, 255, 0.05);
+          color: var(--text-dark);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .paper-external-link {
+          color: #a78bfa;
+          text-decoration: none;
+          font-weight: 500;
+          transition: color 0.15s ease;
+        }
+        .paper-external-link:hover {
+          color: #fff;
+          text-decoration: underline;
+        }
+        .td-link {
+          font-weight: 500;
+        }
+        .td-actions {
+          text-align: right;
+        }
+        .sort-arrow {
+          font-size: 9px;
+          opacity: 0.8;
         }
       `}</style>
     </div>

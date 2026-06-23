@@ -168,7 +168,7 @@ export default function SyncPreview({ alerts, onClose, onStartSync }: SyncPrevie
         .sync-preview-container {
           width: 100%;
           max-width: 800px;
-          max-height: 85vh;
+          height: min(85vh, 750px);
           display: flex;
           flex-direction: column;
           background: var(--bg-dark) !important;
@@ -182,6 +182,7 @@ export default function SyncPreview({ alerts, onClose, onStartSync }: SyncPrevie
           justify-content: space-between;
           padding: 24px;
           border-bottom: 1px solid var(--border-color);
+          flex-shrink: 0;
         }
         .header-title-container {
           display: flex;
@@ -204,6 +205,7 @@ export default function SyncPreview({ alerts, onClose, onStartSync }: SyncPrevie
           padding: 16px 24px;
           background: rgba(255,255,255,0.02);
           border-bottom: 1px solid var(--border-color);
+          flex-shrink: 0;
         }
         .btn-xs {
           font-size: 12px;
@@ -218,7 +220,8 @@ export default function SyncPreview({ alerts, onClose, onStartSync }: SyncPrevie
           color: var(--accent-purple);
         }
         .alerts-list {
-          flex: 1;
+          flex: 1 1 0;
+          min-height: 0;
           overflow-y: auto;
           padding: 24px;
           display: flex;
@@ -231,6 +234,7 @@ export default function SyncPreview({ alerts, onClose, onStartSync }: SyncPrevie
           overflow: hidden;
           background: rgba(255,255,255,0.01);
           transition: all 0.2s ease;
+          flex-shrink: 0;
         }
         .alert-email-card.active {
           border-color: rgba(124, 58, 237, 0.2);
@@ -310,6 +314,7 @@ export default function SyncPreview({ alerts, onClose, onStartSync }: SyncPrevie
           display: flex;
           flex-direction: column;
           gap: 2px;
+          min-width: 0;
         }
         .paper-title {
           font-size: 14px;
@@ -334,6 +339,7 @@ export default function SyncPreview({ alerts, onClose, onStartSync }: SyncPrevie
           padding: 20px 24px;
           border-top: 1px solid var(--border-color);
           background: rgba(255,255,255,0.01);
+          flex-shrink: 0;
         }
       `}</style>
     </div>
