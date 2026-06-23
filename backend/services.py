@@ -19,12 +19,30 @@ def extract_ratings(content: str):
     quality_rating = None
     relevance_rating = None
 
+    # Try XML tags extraction first
+    q_match = re.search(r'<quality_rating>\s*([0-9.]+)\s*</quality_rating>', content, re.DOTALL | re.IGNORECASE)
+    if q_match:
+        try:
+            quality_rating = float(q_match.group(1))
+        except ValueError:
+            pass
+
+    r_match = re.search(r'<relevance_rating>\s*([0-9.]+)\s*</relevance_rating>', content, re.DOTALL | re.IGNORECASE)
+    if r_match:
+        try:
+            relevance_rating = float(r_match.group(1))
+        except ValueError:
+            pass
+
+    if quality_rating is not None and relevance_rating is not None:
+        return quality_rating, relevance_rating
+
     sections = re.split(r'^(?=#{1,4}\s+)', content, flags=re.MULTILINE)
 
     for sec in sections:
         lines = sec.splitlines()
         first_line = lines[0] if lines else ''
-        if re.search(r'quality\s+rating', first_line, re.IGNORECASE):
+        if quality_rating is None and re.search(r'quality\s+rating', first_line, re.IGNORECASE):
             match_in_header = re.search(r'(?:rating:?\s*)?\*?\*?\s*([0-9.]+)\s*/\s*5', first_line, re.IGNORECASE)
             if match_in_header:
                 quality_rating = float(match_in_header.group(1))
@@ -35,7 +53,7 @@ def extract_ratings(content: str):
                 if match_in_body:
                     quality_rating = float(match_in_body.group(1))
 
-        elif re.search(r'relevance\s+(?:to\s+)?user\s+interests|relevance\s+rating', first_line, re.IGNORECASE):
+        elif relevance_rating is None and re.search(r'relevance\s+(?:to\s+)?user\s+interests|relevance\s+rating', first_line, re.IGNORECASE):
             match_in_header = re.search(r'(?:rating:?\s*)?\*?\*?\s*([0-9.]+)\s*/\s*5', first_line, re.IGNORECASE)
             if match_in_header:
                 relevance_rating = float(match_in_header.group(1))
@@ -52,16 +70,16 @@ def extract_ratings(content: str):
 
     # Global fallback if not found in sections
     if quality_rating is None:
-        match = re.search(r'\*\*Rating:\s*([0-9.]+)\s*/\s*5', content, re.IGNORECASE)
+        match = re.search(r'\*?\*?rating\*?\*?:?\*?\*?\s*([0-9.]+)\s*/\s*5', content, re.IGNORECASE)
         if match:
             quality_rating = float(match.group(1))
 
     if relevance_rating is None:
-        match = re.search(r'\*\*Relevance Rating:\s*([0-9.]+)\s*/\s*5', content, re.IGNORECASE)
+        match = re.search(r'relevance\*?\*?:?\*?\*?\s*([0-9.]+)\s*/\s*5', content, re.IGNORECASE)
         if match:
             relevance_rating = float(match.group(1))
         else:
-            all_ratings = re.findall(r'\*\*Rating:\s*([0-9.]+)\s*/\s*5', content, re.IGNORECASE)
+            all_ratings = re.findall(r'\*?\*?rating\*?\*?:?\*?\*?\s*([0-9.]+)\s*/\s*5', content, re.IGNORECASE)
             if len(all_ratings) >= 2:
                 relevance_rating = float(all_ratings[1])
 
@@ -371,3 +389,156 @@ def start_paper_run(papers_to_process: List[Dict[str, str]], emails_fetched: int
     t.start()
 
     return db_run
+
+def run_uploaded_paper_task(
+    run_id: int,
+    file_path: str,
+    original_filename: str,
+    q: queue.Queue
+):
+    """
+    Synchronous task runner that processes an uploaded PDF in a background thread,
+    capturing stdout to the SSE queue.
+    """
+    with LogCapture(q):
+        print(f"[+] Starting manual PDF upload processing run {run_id} at {datetime.now()}")
+        print(f"[+] File: {original_filename}")
+        
+        # 1. Read file bytes
+        try:
+            with open(file_path, "rb") as f:
+                pdf_bytes = f.read()
+        except Exception as e:
+            print(f"[-] Failed to read uploaded file: {e}")
+            with Session(engine) as session:
+                db_run = session.get(Run, run_id)
+                if db_run:
+                    db_run.status = "failed"
+                    db_run.papers_failed = 1
+                    session.add(db_run)
+                    session.commit()
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            q.put(None)
+            return
+
+        # 2. Extract text
+        print("[+] Extracting text from PDF...")
+        text = paper_retriever.extract_text_from_pdf(pdf_bytes)
+        if not text.strip():
+            print("[-] Failed to extract any text from the PDF.")
+            with Session(engine) as session:
+                db_run = session.get(Run, run_id)
+                if db_run:
+                    db_run.status = "failed"
+                    db_run.papers_failed = 1
+                    session.add(db_run)
+                    session.commit()
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            q.put(None)
+            return
+
+        # 3. Extract title
+        print("[+] Extracting paper title using LLM...")
+        title = agent.extract_paper_title(text)
+        if not title:
+            title = Path(original_filename).stem.replace("_", " ").replace("-", " ").title()
+        print(f"[+] Paper Title: {title}")
+
+        # 4. Generate report
+        try:
+            current_interests = ensure_interests_file()
+            print(f"[+] Generating summary report using model: {config.LM_STUDIO_MODEL}...")
+            report = agent.generate_paper_report(title, "Uploaded File", text, current_interests)
+            report = f"# {title}\n\n**Source**: Uploaded PDF ({original_filename})\n\n---\n\n" + report
+
+            # Save report file
+            os.makedirs(config.REPORTS_DIR, exist_ok=True)
+            safe_title = sanitize_filename(title)
+            report_path = Path(config.REPORTS_DIR) / f"report_{safe_title}.md"
+            report_path.write_text(report, encoding="utf-8")
+            print(f"[+] Report saved to {report_path}")
+
+            # Extract ratings
+            q_val, r_val = extract_ratings(report)
+
+            # Save Paper to database
+            with Session(engine) as session:
+                db_paper = Paper(
+                    title=title,
+                    url=f"file://{original_filename}",
+                    status="success",
+                    report_path=str(report_path),
+                    run_id=run_id,
+                    quality_rating=q_val,
+                    relevance_rating=r_val
+                )
+                session.add(db_paper)
+                session.commit()
+
+            # Update DB run to completed
+            with Session(engine) as session:
+                db_run = session.get(Run, run_id)
+                if db_run:
+                    db_run.status = "completed"
+                    db_run.papers_processed = 1
+                    session.add(db_run)
+                    session.commit()
+
+        except Exception as e:
+            print(f"[-] Error generating report: {e}")
+            with Session(engine) as session:
+                db_paper = Paper(
+                    title=title,
+                    url=f"file://{original_filename}",
+                    status="failed",
+                    run_id=run_id
+                )
+                session.add(db_paper)
+                
+                db_run = session.get(Run, run_id)
+                if db_run:
+                    db_run.status = "failed"
+                    db_run.papers_failed = 1
+                    session.add(db_run)
+                session.commit()
+
+        finally:
+            # Clean up temp file
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    print("[+] Cleaned up temporary upload file.")
+                except Exception as clean_err:
+                    print(f"[-] Error removing temp file: {clean_err}")
+
+        # Signal end of queue
+        q.put(None)
+
+def start_uploaded_paper_run(file_path: str, original_filename: str) -> Run:
+    """
+    Creates a Run entry in the DB, launches the thread runner for the uploaded file,
+    and initializes the log queue.
+    """
+    with Session(engine) as session:
+        db_run = Run(
+            status="running",
+            emails_fetched=0
+        )
+        session.add(db_run)
+        session.commit()
+        session.refresh(db_run)
+        run_id = db_run.id
+
+    q = queue.Queue()
+    active_logs[run_id] = q
+
+    t = threading.Thread(
+        target=run_uploaded_paper_task,
+        args=(run_id, file_path, original_filename, q)
+    )
+    t.start()
+
+    return db_run
+
