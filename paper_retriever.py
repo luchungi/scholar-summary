@@ -222,11 +222,36 @@ def retrieve_paper_text(url, timeout=15):
     """
     Retrieves the full text of a paper from a URL.
     Supports:
+    - Academic API retrieval (arXiv, Semantic Scholar)
     - Domain specific URL rules (loaded dynamically from url/rules.json)
     - Automatically discovers rules for new domains using LLM agent
     - Fallback to HTML scraping
     """
+    import academic_api
+
     print(f"Resolving URL: {url}")
+    
+    # Try academic API resolution first
+    try:
+        api_result = academic_api.get_paper_by_academic_api(url)
+        if api_result and api_result.get("pdf_url"):
+            pdf_url = api_result["pdf_url"]
+            print(f"[+] Resolved direct PDF URL via Academic API: {pdf_url}")
+            print(f"Fetching content from: {pdf_url} ...")
+            response = requests.get(pdf_url, headers=HEADERS, timeout=timeout, stream=True)
+            response.raise_for_status()
+            content_type = response.headers.get("Content-Type", "").lower()
+            if "application/pdf" in content_type or pdf_url.lower().endswith(".pdf"):
+                print("Downloading and parsing PDF...")
+                pdf_bytes = response.content
+                text = extract_text_from_pdf(pdf_bytes)
+                if text.strip():
+                    return text
+                else:
+                    print("Warning: Extracted PDF text from Academic API was empty. Falling back to web scraper.")
+    except Exception as api_err:
+        print(f"[-] Academic API resolution error/fallback: {api_err}")
+
     resolved_url = resolve_url(url, timeout)
     print(f"Resolved to: {resolved_url}")
 
