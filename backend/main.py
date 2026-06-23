@@ -39,10 +39,51 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def ensure_paper_rating_columns():
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        cursor = conn.execute(text("PRAGMA table_info(paper)"))
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if "quality_rating" not in columns:
+            print("[*] Migrating: Adding quality_rating column to paper table...")
+            conn.execute(text("ALTER TABLE paper ADD COLUMN quality_rating FLOAT"))
+        if "relevance_rating" not in columns:
+            print("[*] Migrating: Adding relevance_rating column to paper table...")
+            conn.execute(text("ALTER TABLE paper ADD COLUMN relevance_rating FLOAT"))
+
+def sync_existing_paper_ratings():
+    import os
+    from sqlmodel import Session, select
+    from backend.models import Paper
+    from backend.services import extract_ratings
+    
+    with Session(engine) as session:
+        stmt = select(Paper).where(Paper.status == "success", (Paper.quality_rating == None) | (Paper.relevance_rating == None))
+        papers = session.exec(stmt).all()
+        if not papers:
+            return
+            
+        print(f"[*] Found {len(papers)} papers requiring rating synchronization...")
+        for paper in papers:
+            if paper.report_path and os.path.exists(paper.report_path):
+                try:
+                    content = Path(paper.report_path).read_text(encoding="utf-8")
+                    q, r = extract_ratings(content)
+                    paper.quality_rating = q
+                    paper.relevance_rating = r
+                    session.add(paper)
+                    print(f"[+] Synced ratings for '{paper.title}': Quality={q}, Relevance={r}")
+                except Exception as e:
+                    print(f"[-] Failed to sync ratings for paper {paper.id}: {e}")
+        session.commit()
+
 # Startup hook to initialize SQL tables
 @app.on_event("startup")
 def on_startup():
     create_db_and_tables()
+    ensure_paper_rating_columns()
+    sync_existing_paper_ratings()
 
 # Request Models
 class RunStartRequest(BaseModel):
@@ -318,6 +359,48 @@ def get_loaded_model_in_memory() -> Optional[str]:
         print(f"[-] Error calling lms ps: {e}")
     return None
 
+# LM Studio Server Controls
+@app.get("/api/server/status")
+def get_server_status():
+    """
+    Checks the status of the LM Studio server using 'lms status'.
+    """
+    try:
+        import re
+        res = subprocess.run("lms status", shell=True, capture_output=True, text=True)
+        if re.search(r'Server:\s*ON', res.stdout, re.IGNORECASE):
+            return {"status": "ON"}
+        return {"status": "OFF"}
+    except Exception as e:
+        print(f"[-] Error checking server status: {e}")
+        return {"status": "OFF", "error": str(e)}
+
+@app.post("/api/server/start")
+def start_server():
+    """
+    Starts the LM Studio server using 'lms server start'.
+    """
+    try:
+        res = subprocess.run("lms server start", shell=True, capture_output=True, text=True)
+        if res.returncode == 0 or "already running" in res.stdout.lower() or "success" in res.stdout.lower():
+            return {"status": "success", "detail": res.stdout.strip()}
+        raise HTTPException(status_code=500, detail=f"Failed to start server: {res.stderr or res.stdout}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/server/stop")
+def stop_server():
+    """
+    Stops the LM Studio server using 'lms server stop'.
+    """
+    try:
+        res = subprocess.run("lms server stop", shell=True, capture_output=True, text=True)
+        if res.returncode == 0 or "stopped" in res.stdout.lower() or "success" in res.stdout.lower():
+            return {"status": "success", "detail": res.stdout.strip()}
+        raise HTTPException(status_code=500, detail=f"Failed to stop server: {res.stderr or res.stdout}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # LM Studio Model Management
 @app.get("/api/models")
 def list_lm_studio_models():
@@ -499,7 +582,14 @@ if os.path.exists(frontend_path):
 
         index_file = os.path.join(frontend_path, "index.html")
         if os.path.exists(index_file):
-            return FileResponse(index_file)
+            return FileResponse(
+                index_file,
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0"
+                }
+            )
         return {"detail": "Vite frontend not built yet. Compile with npm run build."}
 else:
     @app.get("/{catchall:path}")
