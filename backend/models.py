@@ -1,10 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 from sqlmodel import SQLModel, Field, Relationship
 
 class Run(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     status: str  # "running", "completed", "failed"
     emails_fetched: int = 0
     papers_processed: int = 0
@@ -18,9 +18,11 @@ class Paper(SQLModel, table=True):
     title: str
     url: str
     status: str  # "success", "failed"
-    date_processed: datetime = Field(default_factory=datetime.utcnow)
+    date_processed: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     report_path: Optional[str] = None
     run_id: Optional[int] = Field(default=None, foreign_key="run.id")
+    quality_rating: Optional[float] = Field(default=None)
+    relevance_rating: Optional[float] = Field(default=None)
     
     run: Optional[Run] = Relationship(back_populates="papers")
 
