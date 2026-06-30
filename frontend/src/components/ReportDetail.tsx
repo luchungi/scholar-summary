@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { ArrowLeft, Send, Sparkles, AlertCircle, Bookmark, ExternalLink, Loader, Trash } from 'lucide-react';
 import DiffViewer from './DiffViewer';
 
@@ -186,6 +188,8 @@ export default function ReportDetail({ reportId, onBack }: ReportDetailProps) {
           
           <div className="markdown-render-body">
             <ReactMarkdown
+              remarkPlugins={[remarkMath]}
+              rehypePlugins={[rehypeKatex]}
               components={{
                 a: ({ href, children }) => (
                   <a href={href} target="_blank" rel="noopener noreferrer">

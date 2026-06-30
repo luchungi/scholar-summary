@@ -436,6 +436,20 @@ def stop_server():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/shutdown")
+def shutdown_backend(background_tasks: BackgroundTasks):
+    """
+    Shuts down the backend FastAPI server process gracefully.
+    """
+    def perform_shutdown():
+        import time
+        import signal
+        time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    background_tasks.add_task(perform_shutdown)
+    return {"status": "success", "detail": "Backend server is shutting down..."}
+
 # LM Studio Model Management
 @app.get("/api/models")
 def list_lm_studio_models():

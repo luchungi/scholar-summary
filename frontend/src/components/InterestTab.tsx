@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { Eye, Edit3, Save, RotateCcw, Sparkles, Loader } from 'lucide-react';
 
 export default function InterestTab() {
@@ -112,6 +114,8 @@ export default function InterestTab() {
           <div className="markdown-render-body scroller">
             {content ? (
               <ReactMarkdown
+                remarkPlugins={[remarkMath]}
+                rehypePlugins={[rehypeKatex]}
                 components={{
                   a: ({ href, children }) => (
                     <a href={href} target="_blank" rel="noopener noreferrer">

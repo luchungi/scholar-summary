@@ -6,7 +6,8 @@ import {
   AlertOctagon,
   Terminal,
   Compass,
-  Cpu
+  Cpu,
+  Power
 } from 'lucide-react';
 
 // Component Imports
@@ -147,6 +148,21 @@ export default function App() {
 
   const handleModelLoadFinished = () => {
     fetchModels();
+  };
+
+  const handleShutdownBackend = async () => {
+    if (confirm("Are you sure you want to shut down the backend server? You will need to restart it from the terminal to use the app again.")) {
+      try {
+        const res = await fetch(`${API_URL}/api/shutdown`, { method: 'POST' });
+        if (res.ok) {
+          alert("Backend server shutdown has been initiated. You can now close this browser window/tab.");
+        } else {
+          throw new Error(await res.text());
+        }
+      } catch (err: any) {
+        alert(`Failed to shut down backend: ${err.message || err}`);
+      }
+    }
   };
 
   const handleStartSync = async (papers: LinkItem[], totalEmails: number) => {
@@ -305,6 +321,14 @@ export default function App() {
             <div className={`indicator-dot ${serverStatus === 'ON' ? 'online' : 'offline'}`}></div>
             <span>LLM Server {serverStatus === 'ON' ? 'Online' : 'Offline'}</span>
           </div>
+          <button
+            onClick={handleShutdownBackend}
+            className="btn btn-shutdown-backend"
+            title="Shut down backend server"
+          >
+            <Power size={12} />
+            Shut Down Backend
+          </button>
         </div>
       </aside>
 
@@ -503,6 +527,31 @@ export default function App() {
           margin-top: auto;
           padding-top: 16px;
           border-top: 1px solid var(--border-color);
+        }
+        .btn-shutdown-backend {
+          margin-top: 12px;
+          font-size: 11px;
+          padding: 8px 12px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.03em;
+          border-radius: 8px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          width: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          background: rgba(239, 68, 68, 0.1);
+          color: #ef4444;
+          border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+        .btn-shutdown-backend:hover {
+          background: rgba(239, 68, 68, 0.25);
+          border-color: rgba(239, 68, 68, 0.5);
+          color: #fff;
+          box-shadow: 0 0 12px rgba(239, 68, 68, 0.2);
         }
         .system-indicator {
           display: flex;
