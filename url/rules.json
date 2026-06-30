@@ -47,7 +47,9 @@
   "link.springer.com": {
     "rules": [
       {
-        "type": "none"
+        "type": "regex_replace",
+        "pattern": "^https?://link\\.springer\\.com/article/(?P<id>.+)",
+        "replacement": "https://link.springer.com/content/pdf/{id}_reference.pdf"
       }
     ]
   },
@@ -73,6 +75,57 @@
     ]
   },
   "researchgate.net": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "pm-research.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "arcengkongre.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "ui.adsabs.harvard.edu": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "jfr.ut.ac.ir": {
+    "rules": [
+      {
+        "type": "css_selector",
+        "selector": "a[href*='.pdf']",
+        "attribute": "href"
+      }
+    ]
+  },
+  "helda.helsinki.fi": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "svedbergopen.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "aclanthology.org": {
     "rules": [
       {
         "type": "direct"
