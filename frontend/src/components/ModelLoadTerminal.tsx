@@ -67,7 +67,7 @@ export default function ModelLoadTerminal({ modelKey, onClose, onFinished }: Mod
 
     es.onerror = (err) => {
       console.error('SSE Error:', err);
-      setLogs((prev) => [...prev, '\n[-] Connection lost or LM Studio took too long. Check server.']);
+      setLogs((prev) => [...prev, '\n[-] Connection lost or Ollama took too long. Check server.']);
       setStatus('failed');
       es.close();
     };
@@ -91,7 +91,7 @@ export default function ModelLoadTerminal({ modelKey, onClose, onFinished }: Mod
         <div className="terminal-header">
           <div className="flex items-center gap-2">
             <Terminal size={18} className={status === 'running' ? 'text-purple-400 animate-pulse' : 'text-green-400'} />
-            <span className="terminal-title">LM Studio Load Log</span>
+            <span className="terminal-title">Ollama Load Log</span>
           </div>
           <div className="flex items-center gap-3">
             <span className={`status-badge ${status}`}>

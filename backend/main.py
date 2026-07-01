@@ -362,6 +362,12 @@ def delete_failed_paper(paper_id: int, session: Session = Depends(get_session)):
     session.commit()
     return {"status": "success", "message": "Failed paper record deleted"}
 
+# Helper to get Ollama base REST URL (stripping /v1)
+def get_ollama_host() -> str:
+    from urllib.parse import urlparse
+    parsed = urlparse(config.OLLAMA_BASE_URL)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
 # Helper to modify .env file
 def update_env_file(model_key: str):
     env_path = Path(__file__).resolve().parents[1] / ".env"
@@ -370,69 +376,75 @@ def update_env_file(model_key: str):
         lines = content.splitlines()
         updated = False
         for idx, line in enumerate(lines):
-            if line.strip().startswith("LM_STUDIO_MODEL="):
-                lines[idx] = f"LM_STUDIO_MODEL=openai:{model_key}"
+            if line.strip().startswith("OLLAMA_MODEL="):
+                lines[idx] = f"OLLAMA_MODEL=openai:{model_key}"
                 updated = True
                 break
         if not updated:
-            lines.append(f"LM_STUDIO_MODEL=openai:{model_key}")
+            lines.append(f"OLLAMA_MODEL=openai:{model_key}")
+        # Clean up any leftover LM_STUDIO_MODEL lines to prevent conflicts
+        lines = [line for line in lines if not line.strip().startswith("LM_STUDIO_MODEL=")]
         env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 # Helper to check currently loaded model in memory
 def get_loaded_model_in_memory() -> Optional[str]:
     try:
-        res = subprocess.run("lms ps", shell=True, capture_output=True, text=True)
-        lines = res.stdout.splitlines()
-        for line in lines:
-            line_str = line.strip()
-            if not line_str or line_str.startswith("IDENTIFIER"):
-                continue
-            parts = line_str.split()
-            if parts:
-                return parts[0]
+        import requests
+        res = requests.get(f"{get_ollama_host()}/api/ps", timeout=2)
+        if res.status_code == 200:
+            data = res.json()
+            models = data.get("models", [])
+            if models:
+                return models[0]["name"]
     except Exception as e:
-        print(f"[-] Error calling lms ps: {e}")
+        print(f"[-] Error querying Ollama loaded models: {e}")
     return None
 
-# LM Studio Server Controls
+# Ollama Server Controls
 @app.get("/api/server/status")
 def get_server_status():
     """
-    Checks the status of the LM Studio server using 'lms status'.
+    Checks the status of the Ollama server by checking if the port responds.
     """
     try:
-        import re
-        res = subprocess.run("lms status", shell=True, capture_output=True, text=True)
-        if re.search(r'Server:\s*ON', res.stdout, re.IGNORECASE):
+        import requests
+        res = requests.get(f"{get_ollama_host()}/api/tags", timeout=2)
+        if res.status_code == 200:
             return {"status": "ON"}
         return {"status": "OFF"}
     except Exception as e:
-        print(f"[-] Error checking server status: {e}")
-        return {"status": "OFF", "error": str(e)}
+        return {"status": "OFF"}
 
 @app.post("/api/server/start")
 def start_server():
     """
-    Starts the LM Studio server using 'lms server start'.
+    Starts the Ollama server on macOS.
     """
     try:
-        res = subprocess.run("lms server start", shell=True, capture_output=True, text=True)
-        if res.returncode == 0 or "already running" in res.stdout.lower() or "success" in res.stdout.lower():
-            return {"status": "success", "detail": res.stdout.strip()}
-        raise HTTPException(status_code=500, detail=f"Failed to start server: {res.stderr or res.stdout}")
+        status = get_server_status()
+        if status["status"] == "ON":
+            return {"status": "success", "detail": "Ollama is already running."}
+
+        # Try launching the Ollama macOS application first
+        res = subprocess.run("open -a Ollama", shell=True, capture_output=True, text=True)
+        if res.returncode == 0:
+            return {"status": "success", "detail": "Ollama application started."}
+
+        # Fallback to starting the CLI service in the background
+        subprocess.Popen("ollama serve > /dev/null 2>&1 &", shell=True)
+        return {"status": "success", "detail": "Ollama background service launched."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/server/stop")
 def stop_server():
     """
-    Stops the LM Studio server using 'lms server stop'.
+    Stops the Ollama server on macOS.
     """
     try:
-        res = subprocess.run("lms server stop", shell=True, capture_output=True, text=True)
-        if res.returncode == 0 or "stopped" in res.stdout.lower() or "success" in res.stdout.lower():
-            return {"status": "success", "detail": res.stdout.strip()}
-        raise HTTPException(status_code=500, detail=f"Failed to stop server: {res.stderr or res.stdout}")
+        subprocess.run("killall Ollama", shell=True, capture_output=True)
+        subprocess.run("pkill -f 'ollama serve'", shell=True, capture_output=True)
+        return {"status": "success", "detail": "Ollama server stopped successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -450,82 +462,81 @@ def shutdown_backend(background_tasks: BackgroundTasks):
     background_tasks.add_task(perform_shutdown)
     return {"status": "success", "detail": "Backend server is shutting down..."}
 
-# LM Studio Model Management
+# Ollama Model Management
 @app.get("/api/models")
-def list_lm_studio_models():
+def list_ollama_models():
     """
-    Lists available local models in LM Studio using CLI 'lms ls' and identifies loaded models.
+    Lists available local models in Ollama using the REST API.
     """
     try:
-        # Check what is currently loaded in memory
+        import requests
         loaded_in_mem = get_loaded_model_in_memory()
 
-        # Run lms ls
-        res_ls = subprocess.run("lms ls", shell=True, capture_output=True, text=True)
-        lines = res_ls.stdout.splitlines()
+        res = requests.get(f"{get_ollama_host()}/api/tags", timeout=2)
+        if res.status_code != 200:
+            raise Exception("Failed to contact Ollama tags endpoint")
 
+        data = res.json()
         models = []
-        for line in lines:
-            if "Local" in line:
-                parts = [p.strip() for p in line.split("  ") if p.strip()]
-                if len(parts) >= 4:
-                    key_with_variant = parts[0]
-                    # Strip out (X variants)
-                    key = key_with_variant.split(" (")[0]
-                    size = parts[2]
-                    # A model is loaded if it matches the memory model identifier
-                    is_loaded = (loaded_in_mem == key) if loaded_in_mem else ("✓ LOADED" in line or "LOADED" in line)
+        for item in data.get("models", []):
+            name = item["name"]
+            size_bytes = item.get("size", 0)
 
-                    if "embedding" not in key.lower():
-                        models.append({
-                            "key": key,
-                            "size": size,
-                            "loaded": is_loaded
-                        })
+            # Format size nicely
+            if size_bytes >= 1e9:
+                size_str = f"{size_bytes / 1e9:.1f} GB"
+            elif size_bytes >= 1e6:
+                size_str = f"{size_bytes / 1e6:.1f} MB"
+            else:
+                size_str = f"{size_bytes} Bytes"
+
+            is_loaded = (loaded_in_mem == name)
+
+            models.append({
+                "key": name,
+                "size": size_str,
+                "loaded": is_loaded
+            })
         return models
     except Exception as e:
-        # Fallback if command fails or LM studio CLI is missing
-        print(f"[-] Error calling lms CLI: {e}")
-        # Return fallback list matching config or empty
-        current_model = config.LM_STUDIO_MODEL.replace("openai:", "")
+        print(f"[-] Error listing Ollama models: {e}")
+        current_model = config.OLLAMA_MODEL.replace("openai:", "") if config.OLLAMA_MODEL else "None"
         return [{"key": current_model, "size": "Unknown", "loaded": True}]
 
 @app.post("/api/models/load")
-def load_lm_studio_model(req: ModelLoadRequest, background_tasks: BackgroundTasks):
+def load_ollama_model(req: ModelLoadRequest, background_tasks: BackgroundTasks):
     """
-    Commands LM Studio to load the selected model, updating the env config in memory and on disk.
+    Commands Ollama to load the selected model, updating the env config in memory and on disk.
     """
     try:
-        # Check what is currently loaded
+        import requests
         loaded_model = get_loaded_model_in_memory()
-        
+
         if req.model_key == "none":
             if loaded_model:
-                subprocess.run("lms unload --all", shell=True, capture_output=True)
-            config.LM_STUDIO_MODEL = ""
+                requests.post(f"{get_ollama_host()}/api/generate", json={"model": loaded_model, "keep_alive": 0}, timeout=5)
+            config.OLLAMA_MODEL = ""
             update_env_file("")
             return {"status": "success", "loaded": "none"}
 
         if loaded_model == req.model_key:
-            config.LM_STUDIO_MODEL = f"openai:{req.model_key}"
+            config.OLLAMA_MODEL = f"openai:{req.model_key}"
             update_env_file(req.model_key)
             return {"status": "success", "loaded": req.model_key}
 
         # If another model is active, unload it first
         if loaded_model:
-            subprocess.run("lms unload --all", shell=True, capture_output=True)
+            requests.post(f"{get_ollama_host()}/api/generate", json={"model": loaded_model, "keep_alive": 0}, timeout=5)
 
         # Update config dynamically in Python memory
-        config.LM_STUDIO_MODEL = f"openai:{req.model_key}"
+        config.OLLAMA_MODEL = f"openai:{req.model_key}"
         # Update .env file
         update_env_file(req.model_key)
 
-        # Load model using lms CLI
-        cmd = f"lms load {req.model_key} -y"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-
-        if res.returncode != 0:
-            raise HTTPException(status_code=500, detail=f"LM Studio CLI failed to load model: {res.stderr}")
+        # Preload model via /api/generate
+        res = requests.post(f"{get_ollama_host()}/api/generate", json={"model": req.model_key}, timeout=60)
+        if res.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Ollama API failed to load model: {res.text}")
 
         return {"status": "success", "loaded": req.model_key}
     except Exception as e:
@@ -544,19 +555,17 @@ def stream_load_model(model_key: str):
             if loaded_model:
                 yield f"data: Active model in memory is '{loaded_model}'. Unloading...\n\n"
                 try:
-                    unload_res = subprocess.run("lms unload --all", shell=True, capture_output=True, text=True)
-                    if unload_res.returncode == 0:
-                        yield "data: Unloaded all memory models successfully.\n\n"
-                        config.LM_STUDIO_MODEL = ""
-                        update_env_file("")
-                        yield "data: [SUCCESS]\n\n"
-                    else:
-                        yield f"data: [ERROR] Warning while unloading: {unload_res.stderr.strip()}\n\n"
+                    import requests
+                    requests.post(f"{get_ollama_host()}/api/generate", json={"model": loaded_model, "keep_alive": 0}, timeout=5)
+                    yield "data: Unloaded model successfully.\n\n"
+                    config.OLLAMA_MODEL = ""
+                    update_env_file("")
+                    yield "data: [SUCCESS]\n\n"
                 except Exception as e:
                     yield f"data: [ERROR] Error unloading model: {e}\n\n"
             else:
                 yield "data: No active model in memory to unload.\n\n"
-                config.LM_STUDIO_MODEL = ""
+                config.OLLAMA_MODEL = ""
                 update_env_file("")
                 yield "data: [SUCCESS]\n\n"
             return
@@ -564,7 +573,7 @@ def stream_load_model(model_key: str):
         if loaded_model == model_key:
             yield f"data: Model '{model_key}' is already loaded in memory. Skipping reload.\n\n"
             try:
-                config.LM_STUDIO_MODEL = f"openai:{model_key}"
+                config.OLLAMA_MODEL = f"openai:{model_key}"
                 update_env_file(model_key)
             except Exception as e:
                 yield f"data: Error updating environment variables: {e}\n\n"
@@ -574,11 +583,9 @@ def stream_load_model(model_key: str):
         if loaded_model:
             yield f"data: Active model in memory is '{loaded_model}'. Unloading first...\n\n"
             try:
-                unload_res = subprocess.run("lms unload --all", shell=True, capture_output=True, text=True)
-                if unload_res.returncode == 0:
-                    yield "data: Unloaded all memory models successfully.\n\n"
-                else:
-                    yield f"data: Warning while unloading: {unload_res.stderr.strip()}\n\n"
+                import requests
+                requests.post(f"{get_ollama_host()}/api/generate", json={"model": loaded_model, "keep_alive": 0}, timeout=5)
+                yield "data: Unloaded previous model successfully.\n\n"
             except Exception as e:
                 yield f"data: Error unloading current model: {e}\n\n"
         else:
@@ -586,32 +593,43 @@ def stream_load_model(model_key: str):
 
         yield f"data: Executing command to load '{model_key}' into memory...\n\n"
         try:
-            cmd = f"lms load {model_key} -y"
-            process = subprocess.Popen(
-                cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
+            import json
+            import requests
+            response = requests.post(
+                f"{get_ollama_host()}/api/generate",
+                json={"model": model_key},
+                stream=True,
+                timeout=120
             )
 
-            while True:
-                line = process.stdout.readline()
-                if not line:
-                    break
-                line_clean = line.strip()
-                if line_clean:
-                    yield f"data: {line_clean}\n\n"
+            if response.status_code != 200:
+                yield f"data: [ERROR] Failed to load model. API status code: {response.status_code}\n\n"
+                return
 
-            process.wait()
-            if process.returncode == 0:
-                config.LM_STUDIO_MODEL = f"openai:{model_key}"
-                update_env_file(model_key)
-                yield f"data: Successfully loaded model '{model_key}'!\n\n"
-                yield "data: [SUCCESS]\n\n"
-            else:
-                yield f"data: [ERROR] Failed to load model. Return code: {process.returncode}\n\n"
+            for line in response.iter_lines():
+                if line:
+                    decoded = line.decode('utf-8')
+                    try:
+                        data = json.loads(decoded)
+                        status_msg = data.get("status")
+                        if status_msg:
+                            completed = data.get("completed", 0)
+                            total = data.get("total", 0)
+                            if total > 0:
+                                percent = (completed / total) * 100
+                                yield f"data: {status_msg}: {percent:.1f}% ({completed}/{total})\n\n"
+                            else:
+                                yield f"data: {status_msg}\n\n"
+                        elif data.get("done", False):
+                            reason = data.get("done_reason")
+                            yield f"data: Model load completed. Reason: {reason or 'loaded'}\n\n"
+                    except Exception as json_err:
+                        yield f"data: {decoded}\n\n"
+
+            config.OLLAMA_MODEL = f"openai:{model_key}"
+            update_env_file(model_key)
+            yield f"data: Successfully loaded model '{model_key}'!\n\n"
+            yield "data: [SUCCESS]\n\n"
         except Exception as e:
             yield f"data: [ERROR] Exception during model load: {e}\n\n"
 

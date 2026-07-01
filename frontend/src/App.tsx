@@ -258,7 +258,7 @@ export default function App() {
         <div className="model-manager-panel">
           <div className="model-manager-title">
             <Cpu size={14} className="text-purple-400" />
-            <span>LM Studio Model</span>
+            <span>Ollama Model</span>
           </div>
 
           <div className="server-status-container">
@@ -311,7 +311,7 @@ export default function App() {
             )
           ) : (
             <div className="server-offline-msg">
-              Start the LM Studio server to manage and load models.
+              Start the Ollama server to manage and load models.
             </div>
           )}
         </div>

@@ -449,7 +449,7 @@ def run_uploaded_paper_task(
         # 4. Generate report
         try:
             current_interests = ensure_interests_file()
-            print(f"[+] Generating summary report using model: {config.LM_STUDIO_MODEL}...")
+            print(f"[+] Generating summary report using model: {agent.get_effective_model()}...")
             report = agent.generate_paper_report(title, "Uploaded File", text, current_interests)
             report = f"# {title}\n\n**Source**: Uploaded PDF ({original_filename})\n\n---\n\n" + report
 

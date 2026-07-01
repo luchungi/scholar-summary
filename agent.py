@@ -4,15 +4,44 @@ import re
 import config
 
 # Initialize the aisuite Client
-# Configures the openai provider to hit LM Studio's local endpoint
+# Configures the openai provider to hit Ollama's local OpenAI-compatible endpoint
 client = ai.Client(
     provider_configs={
         "openai": {
-            "base_url": config.LM_STUDIO_BASE_URL,
-            "api_key": config.LM_STUDIO_API_KEY
+            "base_url": config.OLLAMA_BASE_URL,
+            "api_key": "ollama"  # Ollama does not require an API key
         }
     }
 )
+
+def get_effective_model():
+    """
+    Returns the configured Ollama model, or dynamically queries Ollama
+    to fall back to the first available model if none is specified.
+    """
+    if config.OLLAMA_MODEL:
+        if config.OLLAMA_MODEL.startswith("openai:"):
+            return config.OLLAMA_MODEL
+        return f"openai:{config.OLLAMA_MODEL}"
+    
+    # Dynamic fallback: query Ollama REST API tags
+    try:
+        import requests
+        from urllib.parse import urlparse
+        parsed = urlparse(config.OLLAMA_BASE_URL)
+        host_url = f"{parsed.scheme}://{parsed.netloc}"
+        res = requests.get(f"{host_url}/api/tags", timeout=2)
+        if res.status_code == 200:
+            data = res.json()
+            models = data.get("models", [])
+            if models:
+                first_model = models[0]["name"]
+                print(f"[!] No model configured in OLLAMA_MODEL. Dynamically falling back to: {first_model}")
+                return f"openai:{first_model}"
+    except Exception as e:
+        print(f"[-] Error auto-detecting Ollama fallback model: {e}")
+    
+    return "openai:qwen3.6:27b-mlx"
 
 def clean_llm_markdown(text):
     """
@@ -31,7 +60,8 @@ def extract_paper_title(paper_text):
     """
     Prompts the local LLM to extract the paper title from the paper text.
     """
-    print(f"Extracting paper title using model: {config.LM_STUDIO_MODEL}...")
+    model_name = get_effective_model()
+    print(f"Extracting paper title using model: {model_name}...")
     snippet = paper_text[:3000]
     system_prompt = (
         "You are a helpful assistant. Your task is to extract the exact title of the academic paper "
@@ -72,7 +102,7 @@ Now, extract the title from the following snippet:
 Output:"""
     try:
         response = client.chat.completions.create(
-            model=config.LM_STUDIO_MODEL,
+            model=model_name,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -98,7 +128,8 @@ def generate_paper_report(paper_title, paper_url, paper_text, user_interests):
     """
     Prompts the local LLM to analyze the paper and generate a report.
     """
-    print(f"Generating report using model: {config.LM_STUDIO_MODEL}...")
+    model_name = get_effective_model()
+    print(f"Generating report using model: {model_name}...")
 
     system_prompt = (
         "You are an expert Research Assistant Agent. Your role is to read academic papers, "
@@ -147,7 +178,7 @@ IMPORTANT: You MUST append the following ratings metadata block at the very end 
 
     try:
         response = client.chat.completions.create(
-            model=config.LM_STUDIO_MODEL,
+            model=model_name,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -156,16 +187,17 @@ IMPORTANT: You MUST append the following ratings metadata block at the very end 
         return response.choices[0].message.content
     except Exception as e:
         raise ConnectionError(
-            f"Failed to communicate with LM Studio model '{config.LM_STUDIO_MODEL}' "
-            f"at {config.LM_STUDIO_BASE_URL}.\nDetails: {e}\n"
-            f"Please ensure LM Studio is running and the local server is started."
+            f"Failed to communicate with Ollama model '{model_name}' "
+            f"at {config.OLLAMA_BASE_URL}.\nDetails: {e}\n"
+            f"Please ensure Ollama is running and the local server is started."
         )
 
 def update_user_interests(current_interests, user_feedback):
     """
     Prompts the local LLM to refine the user's interest profile based on their feedback.
     """
-    print(f"Updating interest profile using model: {config.LM_STUDIO_MODEL}...")
+    model_name = get_effective_model()
+    print(f"Updating interest profile using model: {model_name}...")
 
     system_prompt = (
         "You are an expert Profile Manager Agent. Your role is to update a researcher's "
@@ -211,7 +243,7 @@ Output:"""
 
     try:
         response = client.chat.completions.create(
-            model=config.LM_STUDIO_MODEL,
+            model=model_name,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -226,14 +258,15 @@ Output:"""
         return cleaned
     except Exception as e:
         raise ConnectionError(
-            f"Failed to communicate with LM Studio to update interests.\nDetails: {e}"
+            f"Failed to communicate with Ollama to update interests.\nDetails: {e}"
         )
 
 def propose_pdf_rule(url, html_links, error_context=None):
     """
     Prompts the local LLM to propose a PDF retrieval rule for a domain based on its HTML links.
     """
-    print(f"Proposing PDF retrieval rule using model: {config.LM_STUDIO_MODEL}...")
+    model_name = get_effective_model()
+    print(f"Proposing PDF retrieval rule using model: {model_name}...")
 
     system_prompt = (
         "You are an expert Web Scraping and Automation Agent. Your task is to analyze the URL and the list of hyperlinks "
@@ -285,7 +318,7 @@ Please analyze this error, inspect the link structure again, and propose a DIFFE
     try:
         try:
             response = client.chat.completions.create(
-                model=config.LM_STUDIO_MODEL,
+                model=model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -295,7 +328,7 @@ Please analyze this error, inspect the link structure again, and propose a DIFFE
         except Exception as json_err:
             print(f"[*] JSON Mode not supported or failed: {json_err}. Falling back to standard format.")
             response = client.chat.completions.create(
-                model=config.LM_STUDIO_MODEL,
+                model=model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
