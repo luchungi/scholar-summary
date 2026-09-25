@@ -11,6 +11,7 @@
 ## Secondary Areas of Interest
 
 *   **Deep Learning**: neural network architectures, explainable AI
+    **Reinforcement Learning**: foundations of reinforcement learning, new techniques that improve sample efficiency or memory persistence
 *   **Rough Path Signatures**: applications in finance
 *   **Adapted Wasserstein Distance or Causal Optimal Transport**: applications in finance
 *   **Workflow Automation**: Automated scientific literature search, document summarization, and knowledge management.
