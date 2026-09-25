@@ -131,5 +131,240 @@
         "type": "direct"
       }
     ]
+  },
+  "cspub-ijcisim.org": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "iapress.org": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "taylorfrancis.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "linklings.s3.amazonaws.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "gupea.ub.gu.se": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "diva-portal.org": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "publication.huntfortalent.org": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "repository.tudelft.nl": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "thesis.dial.uclouvain.be": {
+    "rules": [
+      {
+        "type": "regex_replace",
+        "pattern": "^https?://thesis\\.dial\\.uclouvain\\.be/bitstreams/(?P<id>[^/]+)/download$",
+        "replacement": "https://thesis.dial.uclouvain.be/bitstreams/{id}/download"
+      }
+    ]
+  },
+  "gfarr.org": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "norma.ncirl.ie": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "jaifra.org": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "scholar-press.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "books.google.com.sg": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "cs224r.stanford.edu": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "repository.gatech.edu": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "jceim.org": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "repositorio.comillas.edu": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "imperial.ac.uk": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "rlgjaar.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "academicsciencepress.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "proquest.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "kdd-milets.github.io": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "ideas.repec.org": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "mathnet.ru": {
+    "rules": [
+      {
+        "type": "css_selector",
+        "selector": "a:contains('Full-text PDF')",
+        "attribute": "href"
+      }
+    ]
+  },
+  "nbufe.edu.cn": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "quantitative-research.de": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "insights2techinfo.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "ijnaa.semnan.ac.ir": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "ecb.europa.eu": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "ijfs.usb.ac.ir": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "tfa-epfl.ch": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "scc-lab.github.io": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
   }
 }
