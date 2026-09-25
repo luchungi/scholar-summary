@@ -19,6 +19,7 @@ import FailedPapers from './components/FailedPapers';
 import SyncPreview from './components/SyncPreview';
 import LogsTerminal from './components/LogsTerminal';
 import ModelLoadTerminal from './components/ModelLoadTerminal';
+import ModelSettingsPanel from './components/ModelSettingsPanel';
 
 interface LinkItem {
   title: string;
@@ -308,6 +309,9 @@ export default function App() {
                 >
                   {selectedModel === 'none' ? 'Unload Model' : (showModelLoadTerminal ? 'Loading...' : 'Load Model')}
                 </button>
+                {models.find(m => m.loaded) && (
+                  <ModelSettingsPanel modelKey={models.find(m => m.loaded)!.key} />
+                )}
               </div>
             )
           ) : (

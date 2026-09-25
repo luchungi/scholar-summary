@@ -2,6 +2,7 @@ import aisuite as ai
 import json
 import re
 import config
+import model_settings
 
 # Initialize the aisuite Client
 # Configures the openai provider to hit LM Studio's local endpoint
@@ -9,10 +10,25 @@ client = ai.Client(
     provider_configs={
         "openai": {
             "base_url": config.LM_STUDIO_BASE_URL,
-            "api_key": config.LM_STUDIO_API_KEY
+            "api_key": config.LM_STUDIO_API_KEY,
+            # openai SDK defaults (600s timeout, 2 retries) silently re-send long local
+            # generations; see docs/agent/decisions/0001.
+            "timeout": config.LLM_TIMEOUT_SECONDS,
+            "max_retries": 0
         }
     }
 )
+
+# Thinking is always off for short calls (docs/agent/decisions/0002). LM Studio honours
+# reasoning_effort="none" and ignores it for models that cannot think.
+THINKING_OFF = {"reasoning_effort": "none"}
+
+RATINGS_BLOCK_TEMPLATE = """<ratings>
+  <quality_rating>SCORE</quality_rating>
+  <quality_justification>JUSTIFICATION</quality_justification>
+  <relevance_rating>SCORE</relevance_rating>
+  <relevance_justification>JUSTIFICATION</relevance_justification>
+</ratings>"""
 
 def clean_llm_markdown(text):
     """
@@ -77,7 +93,8 @@ Output:"""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.1
+            temperature=config.SHORT_CALL_TEMPERATURE,
+            **THINKING_OFF
         )
         raw_output = response.choices[0].message.content.strip()
         match = re.search(r'<title>(.*?)</title>', raw_output, re.DOTALL | re.IGNORECASE)
@@ -132,7 +149,8 @@ Opening text of the paper:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.1
+            temperature=config.SHORT_CALL_TEMPERATURE,
+            **THINKING_OFF
         )
         raw = response.choices[0].message.content
         score_match = re.search(r'<relevance_score>\s*([0-9.]+)\s*</relevance_score>', raw, re.DOTALL | re.IGNORECASE)
@@ -158,7 +176,8 @@ def generate_paper_report(paper_title, paper_url, paper_text, user_interests, ac
         "take the authors' claims at face value, you flag unsupported claims, unrealistic experiments "
         "(e.g. backtests without transaction costs, in-sample-only results, look-ahead/data-snooping bias), "
         "missing baselines or ablations, and gaps in mathematical rigor. You summarize papers accurately "
-        "and evaluate their relevance to a researcher's interest profile."
+        "and evaluate their relevance to a researcher's interest profile. "
+        "Your report always ends with the '### 6. Ratings' section containing the <ratings> block."
     )
 
     access_section = ""
@@ -211,15 +230,18 @@ Provide a clear, high-level summary: the problem it solves, the proposed method/
 ### 5. Fit in the Literature & Contributions
 Explain how the paper fits into the wider academic literature, its core contributions (e.g. novel theory, architecture, improved efficiency, new datasets or benchmarks), and how it compares to existing approaches.
 
-IMPORTANT: You MUST append the following ratings metadata block at the very end of your response. Ensure the scores are floats (e.g. 4.0, 3.5) consistent with the rubrics above and the justifications are short (1-2 sentences):
-<ratings>
-  <quality_rating>SCORE</quality_rating>
-  <quality_justification>JUSTIFICATION</quality_justification>
-  <relevance_rating>SCORE</relevance_rating>
-  <relevance_justification>JUSTIFICATION</relevance_justification>
-</ratings>
+### 6. Ratings
+This section is REQUIRED and must be the last section. It contains ONLY the following block, with float scores (e.g. 4.0, 3.5) consistent with sections 2 and 3 and short (1-2 sentence) justifications:
+{RATINGS_BLOCK_TEMPLATE}
 """
 
+    settings = model_settings.resolve_report_settings(config.LM_STUDIO_MODEL)
+    print(
+        f"Report settings: thinking={'on' if settings['thinking'] else 'off'} ({settings['thinking_source']}), "
+        f"temperature={settings['temperature']} ({settings['temperature_source']})"
+    )
+    # Thinking on: leave it to the model's default rather than forcing an effort level.
+    thinking_kwargs = {} if settings["thinking"] else THINKING_OFF
     try:
         response = client.chat.completions.create(
             model=config.LM_STUDIO_MODEL,
@@ -227,15 +249,62 @@ IMPORTANT: You MUST append the following ratings metadata block at the very end 
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=config.LLM_TEMPERATURE
+            temperature=settings["temperature"],
+            **thinking_kwargs
         )
-        return response.choices[0].message.content
+        _log_usage(response)
+        report = response.choices[0].message.content
     except Exception as e:
         raise ConnectionError(
             f"Failed to communicate with LM Studio model '{config.LM_STUDIO_MODEL}' "
             f"at {config.LM_STUDIO_BASE_URL}.\nDetails: {e}\n"
             f"Please ensure LM Studio is running and the local server is started."
         )
+    return ensure_ratings_block(report)
+
+def _log_usage(response):
+    usage = getattr(response, "usage", None)
+    if not usage:
+        return
+    details = getattr(usage, "completion_tokens_details", None)
+    reasoning = getattr(details, "reasoning_tokens", None) if details else None
+    print(
+        f"Tokens: prompt={usage.prompt_tokens}, completion={usage.completion_tokens}"
+        + (f" (thinking={reasoning})" if reasoning else "")
+    )
+
+def ensure_ratings_block(report):
+    """
+    Some models (e.g. qwen3.8) drop the <ratings> block. If it is missing, ask for it in a
+    short thinking-off call and append it as section 6 (docs/agent/decisions/0003).
+    """
+    if not report or re.search(r'<ratings>.*?</ratings>', report, re.DOTALL | re.IGNORECASE):
+        return report
+    print("[*] Report is missing the <ratings> block; requesting it in a short follow-up call...")
+    try:
+        response = client.chat.completions.create(
+            model=config.LM_STUDIO_MODEL,
+            messages=[
+                {"role": "system", "content": "You extract ratings from a paper review. Output ONLY the <ratings> block, nothing else."},
+                {"role": "user", "content": (
+                    f"{report}\n\n---\nFrom the review above, output the ratings consistent with its "
+                    f"Quality Rating and Relevance sections, as floats, with 1-2 sentence justifications:\n"
+                    f"{RATINGS_BLOCK_TEMPLATE}"
+                )}
+            ],
+            temperature=config.SHORT_CALL_TEMPERATURE,
+            **THINKING_OFF
+        )
+        raw = response.choices[0].message.content or ""
+        match = re.search(r'<ratings>.*?</ratings>', raw, re.DOTALL | re.IGNORECASE)
+        if not match:
+            print("[-] Ratings follow-up call returned no <ratings> block.")
+            return report
+        print("[+] Ratings block recovered.")
+        return report.rstrip() + "\n\n### 6. Ratings\n" + match.group(0) + "\n"
+    except Exception as e:
+        print(f"[-] Ratings follow-up call failed: {e}")
+        return report
 
 def update_user_interests(current_interests, user_feedback):
     """
@@ -291,7 +360,8 @@ Output:"""
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
-            ]
+            ],
+            **THINKING_OFF
         )
         raw_output = response.choices[0].message.content.strip()
         match = re.search(r'<profile>(.*?)</profile>', raw_output, re.DOTALL | re.IGNORECASE)
@@ -366,7 +436,8 @@ Please analyze this error, inspect the link structure again, and propose a DIFFE
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                **THINKING_OFF
             )
         except Exception as json_err:
             print(f"[*] JSON Mode not supported or failed: {json_err}. Falling back to standard format.")
@@ -375,7 +446,8 @@ Please analyze this error, inspect the link structure again, and propose a DIFFE
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
-                ]
+                ],
+                **THINKING_OFF
             )
         raw_output = response.choices[0].message.content.strip()
         cleaned = clean_llm_markdown(raw_output)

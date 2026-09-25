@@ -29,7 +29,21 @@ URL_RULES_PATH = os.getenv("URL_RULES_PATH", "./url/rules.json")
 MAX_PAPER_TOKENS = int(os.getenv("MAX_PAPER_TOKENS", "48000"))
 CHARS_PER_TOKEN = float(os.getenv("CHARS_PER_TOKEN", "3.6"))
 MAX_PAPER_CHARS = int(MAX_PAPER_TOKENS * CHARS_PER_TOKEN)
-LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
+
+# LLM call behaviour (docs/agent/decisions/0001, 0002, 0004)
+# Local generation with thinking can exceed the openai SDK's 600s default; a timeout there
+# silently re-sent the whole request, so calls get a long timeout and no automatic retries.
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "3600"))
+# Short calls (title extraction, relevance gate, ratings repair, profile update, PDF rules)
+# always run with thinking off at this fixed temperature.
+SHORT_CALL_TEMPERATURE = float(os.getenv("SHORT_CALL_TEMPERATURE", "0.1"))
+# Full paper analysis: default thinking on/off; overridable per model from the UI.
+REPORT_THINKING = os.getenv("REPORT_THINKING", "false").lower() in ("1", "true", "yes", "on")
+# Full paper analysis: fallback temperature, used only when there is no per-model UI override
+# and no creator guidance for the model (LM Studio model.yaml / generation_config.json).
+REPORT_TEMPERATURE = float(os.getenv("REPORT_TEMPERATURE", os.getenv("LLM_TEMPERATURE", "0.3")))
+# Per-model UI overrides (temperature, thinking) for the full paper analysis.
+MODEL_SETTINGS_PATH = os.getenv("MODEL_SETTINGS_PATH", "model_settings.json")
 
 # Relevance pre-filter gate: skip full analysis when a quick title+abstract check
 # scores below the threshold. Set RELEVANCE_GATE_ENABLED=false to disable.

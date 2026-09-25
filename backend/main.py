@@ -25,6 +25,7 @@ from backend.services import (
     active_logs
 )
 import agent
+import model_settings
 import paper_retriever
 from agent import update_user_interests
 from main import ensure_interests_file, sanitize_filename
@@ -103,6 +104,11 @@ class ProfileSaveRequest(BaseModel):
 
 class ModelLoadRequest(BaseModel):
     model_key: str
+
+class ModelSettingsRequest(BaseModel):
+    model_key: str
+    temperature: Optional[float] = None  # None clears the override (use creator guidance)
+    thinking: Optional[bool] = None      # None clears the override (use REPORT_THINKING)
 
 # Endpoints
 @app.get("/api/alerts")
@@ -492,6 +498,33 @@ def list_lm_studio_models():
         # Return fallback list matching config or empty
         current_model = config.LM_STUDIO_MODEL.replace("openai:", "")
         return [{"key": current_model, "size": "Unknown", "loaded": True}]
+
+def _model_settings_payload(model_key: str):
+    return {
+        "model_key": model_key,
+        "guidance": model_settings.get_creator_guidance(model_key),
+        "overrides": model_settings.get_overrides(model_key),
+        "effective": model_settings.resolve_report_settings(model_key),
+        "env_defaults": {"temperature": config.REPORT_TEMPERATURE, "thinking": config.REPORT_THINKING},
+    }
+
+@app.get("/api/model-settings")
+def get_model_settings(model_key: str):
+    """
+    Full paper analysis settings for a model: creator guidance, user overrides and the
+    effective values (docs/agent/decisions/0002, 0004).
+    """
+    return _model_settings_payload(model_key)
+
+@app.put("/api/model-settings")
+def update_model_settings(req: ModelSettingsRequest):
+    """
+    Stores per-model overrides for the full paper analysis. Null fields clear the override.
+    """
+    if req.temperature is not None and not (0.0 <= req.temperature <= 2.0):
+        raise HTTPException(status_code=400, detail="Temperature must be between 0 and 2.")
+    model_settings.set_overrides(req.model_key, temperature=req.temperature, thinking=req.thinking)
+    return _model_settings_payload(req.model_key)
 
 @app.post("/api/models/load")
 def load_lm_studio_model(req: ModelLoadRequest, background_tasks: BackgroundTasks):
