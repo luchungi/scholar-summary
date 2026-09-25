@@ -76,7 +76,8 @@ Output:"""
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
-            ]
+            ],
+            temperature=0.1
         )
         raw_output = response.choices[0].message.content.strip()
         match = re.search(r'<title>(.*?)</title>', raw_output, re.DOTALL | re.IGNORECASE)
@@ -94,17 +95,78 @@ Output:"""
         print(f"[-] Error extracting paper title: {e}")
         return None
 
-def generate_paper_report(paper_title, paper_url, paper_text, user_interests):
+def assess_relevance(paper_title, paper_snippet, user_interests):
+    """
+    Quick relevance pre-check from title + abstract snippet.
+    Returns (score: float | None, reason: str).
+    """
+    print(f"Pre-checking relevance using model: {config.LM_STUDIO_MODEL}...")
+    system_prompt = (
+        "You are a strict research-triage assistant. Given a researcher's interest profile and the "
+        "title plus opening text of a paper, rate how relevant the paper is to the profile on a 1-5 scale:\n"
+        "5 = direct hit on a Primary Area of Interest.\n"
+        "4 = strong overlap with a Primary Area from a different angle.\n"
+        "3 = fits a Secondary Area of Interest.\n"
+        "2 = only tangential or purely methodological overlap.\n"
+        "1 = keyword-only overlap; the actual topic is outside the profile.\n"
+        "Respond with EXACTLY this format and nothing else:\n"
+        "<relevance_score>SCORE</relevance_score>\n"
+        "<reason>ONE short sentence</reason>"
+    )
+    user_prompt = f"""Researcher's interest profile:
+---
+{user_interests}
+---
+
+Paper title: {paper_title}
+
+Opening text of the paper:
+---
+{paper_snippet}
+---
+"""
+    try:
+        response = client.chat.completions.create(
+            model=config.LM_STUDIO_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1
+        )
+        raw = response.choices[0].message.content
+        score_match = re.search(r'<relevance_score>\s*([0-9.]+)\s*</relevance_score>', raw, re.DOTALL | re.IGNORECASE)
+        reason_match = re.search(r'<reason>(.*?)</reason>', raw, re.DOTALL | re.IGNORECASE)
+        score = float(score_match.group(1)) if score_match else None
+        reason = reason_match.group(1).strip() if reason_match else ""
+        return score, reason
+    except Exception as e:
+        print(f"[-] Error during relevance pre-check (paper will be analyzed anyway): {e}")
+        return None, ""
+
+def generate_paper_report(paper_title, paper_url, paper_text, user_interests, access_info=None):
     """
     Prompts the local LLM to analyze the paper and generate a report.
+    access_info: optional factual note (computed by the retriever) about how the text
+    was obtained (PDF vs HTML scrape, char count, truncation), passed as fact to the model.
     """
     print(f"Generating report using model: {config.LM_STUDIO_MODEL}...")
 
     system_prompt = (
-        "You are an expert Research Assistant Agent. Your role is to read academic papers, "
-        "summarize them, analyze their contributions to the literature, and evaluate their "
-        "relevance to a researcher's interests."
+        "You are a skeptical peer reviewer with expertise in quantitative finance, stochastic analysis, "
+        "machine learning, and reinforcement learning. You read academic papers critically: you do not "
+        "take the authors' claims at face value, you flag unsupported claims, unrealistic experiments "
+        "(e.g. backtests without transaction costs, in-sample-only results, look-ahead/data-snooping bias), "
+        "missing baselines or ablations, and gaps in mathematical rigor. You summarize papers accurately "
+        "and evaluate their relevance to a researcher's interest profile."
     )
+
+    access_section = ""
+    if access_info:
+        access_section = f"""
+Factual note on how the text was obtained (do NOT speculate about access beyond this):
+{access_info}
+"""
 
     user_prompt = f"""Here is the researcher's interest profile:
 ---
@@ -114,29 +176,42 @@ def generate_paper_report(paper_title, paper_url, paper_text, user_interests):
 Please analyze the following paper:
 Title: {paper_title}
 URL: {paper_url}
-
+{access_section}
 Paper Text:
 ---
 {paper_text}
 ---
 
-Generate a comprehensive, structured report in markdown and using LaTeX for equations that addresses the following points:
+Generate a comprehensive, structured report in markdown and using LaTeX for equations with the following sections:
 
-### 1. Access to full text
-If the paper is behind a paywall or not fully accessible, highlight this to the user
+### 1. Paper Metadata
+Extract from the text if available: authors, affiliation(s), venue/journal, and year. Write "Unknown" for anything not stated in the text. Do not guess.
 
-### 2. Rate the quality of the paper on a scale of 1 to 5, with 5 being the highest quality. Provide a brief justification for your rating.
+### 2. Quality Rating
+Rate the quality of the paper on a scale of 1 to 5 using this rubric, and justify the score against the rubric:
+- 5: Meets the bar of a top venue/journal (e.g. NeurIPS/ICML, Mathematical Finance, Annals of Applied Probability, JF/JFE): rigorous and correct proofs or well-founded stochastic modeling; strong empirical methodology (realistic backtests with transaction costs, out-of-sample evaluation, strong baselines, ablations); clearly novel contribution.
+- 4: Solid, credible work with minor gaps (e.g. limited baselines, restrictive assumptions that are honestly stated).
+- 3: Competent but limited: incremental novelty, weak evaluation (in-sample only, few assets/short periods, no ablations), or proofs/derivations with gaps.
+- 2: Significant flaws: unrealistic experiments (no transaction costs, look-ahead bias, data snooping), unsupported claims, or imprecise/hand-wavy mathematics.
+- 1: Serious errors, pseudo-rigor, or predatory-journal characteristics.
+Calibration: most papers from alert feeds (preprints, theses, minor journals) should land at 2-3. Reserve 4+ for work that genuinely meets top-venue standards. Judge what is demonstrated in the text, not what the authors claim.
 
 ### 3. Relevance to User Interests
-Analyze how this paper connects with the user's interests listed in their profile and give a rating on a scale of 1 to 5 for relevance. Point out specific projects, keywords, or topics that are relevant, and explain why this paper is worth their attention (or why it may not be).
+Rate relevance to the profile on a scale of 1 to 5 using this rubric:
+- 5: Direct hit on a Primary Area of Interest.
+- 4: Strong overlap with a Primary Area from a different angle.
+- 3: Fits a Secondary Area of Interest.
+- 2: Only tangential or purely methodological overlap.
+- 1: Keyword-only overlap; the topic is outside the profile.
+Name the specific interest areas or keywords that match, and explain why the paper is or is not worth the researcher's attention.
 
 ### 4. Key High-Level Ideas
-Provide a clear, high-level summary of the paper. Explain what problem it solves, the proposed method/architecture, and the key findings or results. Keep it accessible yet detailed enough to capture the technical essence.
+Provide a clear, high-level summary: the problem it solves, the proposed method/model/architecture, and the key findings or results. Accessible yet detailed enough to capture the technical essence.
 
 ### 5. Fit in the Literature & Contributions
-Explain how the paper fits into the wider academic literature. Identify its core contributions (e.g., novel architecture, improved efficiency, new datasets, or benchmarks) and how it compares to existing approaches.
+Explain how the paper fits into the wider academic literature, its core contributions (e.g. novel theory, architecture, improved efficiency, new datasets or benchmarks), and how it compares to existing approaches.
 
-IMPORTANT: You MUST append the following ratings metadata block at the very end of your response. Ensure the scores are floats (e.g. 4.0, 3.5) and the justifications are short (1-2 sentences):
+IMPORTANT: You MUST append the following ratings metadata block at the very end of your response. Ensure the scores are floats (e.g. 4.0, 3.5) consistent with the rubrics above and the justifications are short (1-2 sentences):
 <ratings>
   <quality_rating>SCORE</quality_rating>
   <quality_justification>JUSTIFICATION</quality_justification>
@@ -151,7 +226,8 @@ IMPORTANT: You MUST append the following ratings metadata block at the very end 
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
-            ]
+            ],
+            temperature=config.LLM_TEMPERATURE
         )
         return response.choices[0].message.content
     except Exception as e:

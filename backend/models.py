@@ -17,12 +17,13 @@ class Paper(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     title: str
     url: str
-    status: str  # "success", "failed"
+    status: str  # "success", "failed", "skipped" (low relevance pre-check)
     date_processed: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     report_path: Optional[str] = None
     run_id: Optional[int] = Field(default=None, foreign_key="run.id")
     quality_rating: Optional[float] = Field(default=None)
     relevance_rating: Optional[float] = Field(default=None)
+    skip_reason: Optional[str] = Field(default=None)
     
     run: Optional[Run] = Relationship(back_populates="papers")
 

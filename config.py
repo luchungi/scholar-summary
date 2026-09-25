@@ -23,6 +23,19 @@ INTERESTS_FILE = os.getenv("INTERESTS_FILE", "user_interests.md")
 MAX_EMAIL_FETCH = int(os.getenv("MAX_EMAIL_FETCH", "10"))
 URL_RULES_PATH = os.getenv("URL_RULES_PATH", "./url/rules.json")
 
+# LLM prompt budget & sampling
+# Paper text budget: sized for ~25 dense pages (excl. references) inside a 64k context,
+# leaving ~16k tokens for the interest profile, instructions, and the generated report.
+MAX_PAPER_TOKENS = int(os.getenv("MAX_PAPER_TOKENS", "48000"))
+CHARS_PER_TOKEN = float(os.getenv("CHARS_PER_TOKEN", "3.6"))
+MAX_PAPER_CHARS = int(MAX_PAPER_TOKENS * CHARS_PER_TOKEN)
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
+
+# Relevance pre-filter gate: skip full analysis when a quick title+abstract check
+# scores below the threshold. Set RELEVANCE_GATE_ENABLED=false to disable.
+RELEVANCE_GATE_ENABLED = os.getenv("RELEVANCE_GATE_ENABLED", "true").lower() in ("1", "true", "yes")
+RELEVANCE_GATE_THRESHOLD = float(os.getenv("RELEVANCE_GATE_THRESHOLD", "2.5"))
+
 # Report Settings
 REPORTS_DIR = os.getenv("REPORTS_DIR", "reports")
 FAILED_PAPERS_FILE = os.getenv("FAILED_PAPERS_FILE", "failed_papers.md")

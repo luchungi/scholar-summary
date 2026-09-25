@@ -2,6 +2,7 @@ import os
 import sys
 import queue
 import io
+import difflib
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -102,35 +103,155 @@ from main import (
 # In-memory dictionary to hold live log queues for running jobs
 active_logs: Dict[int, queue.Queue] = {}
 
-class QueueWriter(io.TextIOBase):
+class _ThreadLogRouter(io.TextIOBase):
     """
-    A helper file-like object that redirects write operations to a thread-safe Queue.
+    Routes writes to per-thread queues. Threads that haven't registered a queue
+    fall through to the original stream, so concurrent runs can never
+    cross-contaminate each other's log streams.
     """
-    def __init__(self, q: queue.Queue):
-        self.q = q
+    def __init__(self, fallback):
+        self.fallback = fallback
+        self.routes: Dict[int, queue.Queue] = {}
+    def register(self, q: queue.Queue):
+        self.routes[threading.get_ident()] = q
+    def unregister(self):
+        self.routes.pop(threading.get_ident(), None)
     def write(self, s):
-        if s:
-            self.q.put(s)
-        return len(s)
+        q = self.routes.get(threading.get_ident())
+        if q is not None:
+            if s:
+                q.put(s)
+            return len(s)
+        return self.fallback.write(s)
     def flush(self):
-        pass
+        if threading.get_ident() not in self.routes:
+            self.fallback.flush()
+
+# Install the routers once at import time
+_stdout_router = _ThreadLogRouter(sys.stdout)
+_stderr_router = _ThreadLogRouter(sys.stderr)
+sys.stdout = _stdout_router
+sys.stderr = _stderr_router
 
 class LogCapture:
     """
-    Context manager to redirect stdout and stderr to a queue.
+    Context manager routing the current thread's stdout/stderr to a queue.
     """
     def __init__(self, q: queue.Queue):
         self.q = q
-        self.old_stdout = sys.stdout
-        self.old_stderr = sys.stderr
-        self.writer = QueueWriter(q)
     def __enter__(self):
-        sys.stdout = self.writer
-        sys.stderr = self.writer
+        _stdout_router.register(self.q)
+        _stderr_router.register(self.q)
         return self
     def __exit__(self, exc_type, exc_val, exc_tb):
-        sys.stdout = self.old_stdout
-        sys.stderr = self.old_stderr
+        _stdout_router.unregister()
+        _stderr_router.unregister()
+
+# Single-active-run guard: LM Studio serves one model, so overlapping runs only
+# contend for it. POST /api/runs returns the active run instead of starting another.
+_run_state_lock = threading.Lock()
+_active_run_id: Optional[int] = None
+
+def get_active_run() -> Optional[Run]:
+    with _run_state_lock:
+        rid = _active_run_id
+    if rid is None:
+        return None
+    with Session(engine) as session:
+        run = session.get(Run, rid)
+    if run and run.status == "running":
+        return run
+    return None
+
+def _set_active_run(run_id: int):
+    global _active_run_id
+    with _run_state_lock:
+        _active_run_id = run_id
+
+def _clear_active_run(run_id: int):
+    global _active_run_id
+    with _run_state_lock:
+        if _active_run_id == run_id:
+            _active_run_id = None
+
+def _extract_canonical_id(url: str) -> Optional[str]:
+    """
+    Extracts a canonical paper identifier from a URL so the same paper is
+    recognized across different links (abs vs pdf, v1 vs v2, doi resolver, etc.).
+    """
+    m = re.search(r'arxiv\.org/(?:abs|pdf|html)/(\d{4}\.\d{4,5})(?:v\d+)?', url, re.IGNORECASE)
+    if m:
+        return f"arxiv:{m.group(1)}"
+    m = re.search(r'doi\.org/(10\.\d{4,9}/[^\s?#]+)', url, re.IGNORECASE)
+    if m:
+        return f"doi:{m.group(1).lower()}"
+    m = re.search(r'ssrn\.com/.*abstract(?:_id)?=(\d+)', url, re.IGNORECASE)
+    if m:
+        return f"ssrn:{m.group(1)}"
+    return None
+
+def _normalize_title(title: str) -> str:
+    """
+    Lowercases and strips everything but alphanumerics, so spacing glitches and
+    glued words from Scholar alerts ('forportfolioestimation') compare equal.
+    """
+    return re.sub(r'[^a-z0-9]', '', (title or "").lower())
+
+TITLE_MATCH_RATIO = 0.90
+MIN_TITLE_MATCH_LEN = 20  # don't fuzzy-match very short/generic titles
+
+def annotate_links_with_history(alerts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Marks alert links that correspond to papers already in the DB.
+    Layered matching: exact normalized URL -> canonical ID (arXiv/DOI/SSRN) ->
+    fuzzy normalized-title similarity. Adds previous_status, match_type, and
+    matched_title to each matched link.
+    """
+    with Session(engine) as session:
+        papers = session.exec(select(Paper)).all()
+
+    # Prefer successful papers when several records exist for the same key
+    papers.sort(key=lambda p: 0 if p.status == "success" else 1)
+
+    by_url: Dict[str, Paper] = {}
+    by_id: Dict[str, Paper] = {}
+    title_index: List[tuple] = []
+    for p in papers:
+        if p.url and p.url not in by_url:
+            by_url[p.url] = p
+        cid = _extract_canonical_id(p.url or "")
+        if cid and cid not in by_id:
+            by_id[cid] = p
+        norm = _normalize_title(p.title)
+        if len(norm) >= MIN_TITLE_MATCH_LEN:
+            title_index.append((norm, p))
+
+    for alert in alerts:
+        for link in alert.get("links", []):
+            url = (link.get("url") or "").strip()
+            title = link.get("title") or ""
+
+            match, match_type = by_url.get(url), "url"
+            if not match:
+                cid = _extract_canonical_id(url)
+                match, match_type = (by_id.get(cid), "id") if cid else (None, None)
+            if not match:
+                norm = _normalize_title(title)
+                if len(norm) >= MIN_TITLE_MATCH_LEN:
+                    best, best_ratio = None, 0.0
+                    for norm_title, p in title_index:
+                        ratio = difflib.SequenceMatcher(None, norm, norm_title).ratio()
+                        if ratio > best_ratio:
+                            best_ratio, best = ratio, p
+                    if best_ratio >= TITLE_MATCH_RATIO:
+                        match, match_type = best, "title"
+
+            if match:
+                link["previous_status"] = match.status
+                link["match_type"] = match_type
+                link["matched_title"] = match.title
+
+    return alerts
 
 def get_latest_alerts_from_gmail() -> List[Dict[str, Any]]:
     """
@@ -145,6 +266,9 @@ def get_latest_alerts_from_gmail() -> List[Dict[str, Any]]:
 
     # Normalize URLs and deduplicate links across emails
     raw_alerts = remove_duplicate_links(raw_alerts)
+
+    # Mark links that match papers already analyzed/failed/skipped in the DB
+    raw_alerts = annotate_links_with_history(raw_alerts)
 
     new_alerts = []
     with Session(engine) as session:
@@ -215,6 +339,7 @@ def run_paper_processing_task(
 
         success_count = 0
         failure_count = 0
+        skipped_count = 0
 
         # Load user interests
         try:
@@ -226,6 +351,7 @@ def run_paper_processing_task(
         for idx, paper_info in enumerate(papers_to_process, 1):
             title = paper_info.get("title", "").strip()
             url = paper_info.get("url")
+            force = str(paper_info.get("force", "")).lower() in ("true", "1", "yes")
 
             print("\n" + "=" * 60)
             print(f"[{idx}/{len(papers_to_process)}] Fetching paper text for URL: {url}")
@@ -233,8 +359,10 @@ def run_paper_processing_task(
 
             # Fetch text
             paper_text = None
+            retrieval = None
             try:
-                paper_text = paper_retriever.retrieve_paper_text(url)
+                retrieval = paper_retriever.retrieve_paper(url)
+                paper_text = retrieval["text"] if retrieval else None
             except Exception as e:
                 print(f"[-] Error retrieving paper: {e}")
 
@@ -287,10 +415,48 @@ def run_paper_processing_task(
             print(f"[+] Processing paper: {title}")
             print(f"[+] Retrieved {len(paper_text)} characters of text.")
 
+            # Relevance pre-filter gate: skip full analysis for off-profile papers
+            if config.RELEVANCE_GATE_ENABLED and not force:
+                gate_score, gate_reason = agent.assess_relevance(title, paper_text[:3000], current_interests)
+                if gate_score is not None and gate_score < config.RELEVANCE_GATE_THRESHOLD:
+                    print(f"[*] Skipping paper: relevance pre-check scored {gate_score}/5 "
+                          f"(threshold {config.RELEVANCE_GATE_THRESHOLD}). Reason: {gate_reason}")
+                    skipped_count += 1
+                    with Session(engine) as session:
+                        stmt = select(Paper).where(
+                            Paper.url == url,
+                            Paper.status == "skipped"
+                        )
+                        existing_skipped = session.exec(stmt).first()
+                        if not existing_skipped:
+                            existing_skipped = Paper(title=title, url=url, status="skipped", run_id=run_id)
+                        existing_skipped.title = title
+                        existing_skipped.relevance_rating = gate_score
+                        existing_skipped.skip_reason = gate_reason
+                        existing_skipped.date_processed = datetime.now(timezone.utc).replace(tzinfo=None)
+                        existing_skipped.run_id = run_id
+                        session.add(existing_skipped)
+                        session.commit()
+                    continue
+                elif gate_score is not None:
+                    print(f"[+] Relevance pre-check passed: {gate_score}/5. Proceeding to full analysis.")
+
+            # Factual access note computed by the retriever (the LLM is told not to speculate)
+            if retrieval:
+                source_label = ("PDF (downloaded and parsed)" if retrieval["source"] == "pdf"
+                                else "HTML scrape of the landing page (full PDF may not have been accessible)")
+                access_info = f"Text obtained via {source_label}; {retrieval['raw_chars']} characters extracted"
+                access_info += "; middle of the paper truncated to fit the context budget." if retrieval["truncated"] else "."
+            else:
+                access_info = None
+
             # Generate summary report using LM Studio LLM
             try:
-                report = agent.generate_paper_report(title, url, paper_text, current_interests)
-                report = f"# {title}\n\n**Link**: [{url}]({url})\n\n---\n\n" + report
+                report = agent.generate_paper_report(title, url, paper_text, current_interests, access_info)
+                header = f"# {title}\n\n**Link**: [{url}]({url})\n\n"
+                if access_info:
+                    header += f"**Source**: {access_info}\n\n"
+                report = header + "---\n\n" + report
 
                 # Save markdown file
                 os.makedirs(config.REPORTS_DIR, exist_ok=True)
@@ -315,10 +481,10 @@ def run_paper_processing_task(
                     )
                     session.add(db_paper)
 
-                    # Delete any previous failed records for this URL
+                    # Delete any previous failed/skipped records for this URL
                     stmt = select(Paper).where(
                         Paper.url == url,
-                        Paper.status == "failed"
+                        Paper.status.in_(["failed", "skipped"])
                     )
                     for existing in session.exec(stmt).all():
                         session.delete(existing)
@@ -351,7 +517,8 @@ def run_paper_processing_task(
                     session.commit()
 
         # Complete run updates
-        print(f"\n[+] Run {run_id} finished! Succeeded: {success_count}, Failed: {failure_count}")
+        print(f"\n[+] Run {run_id} finished! Succeeded: {success_count}, "
+              f"Failed: {failure_count}, Skipped (low relevance): {skipped_count}")
         with Session(engine) as session:
             db_run = session.get(Run, run_id)
             if db_run:
@@ -361,13 +528,20 @@ def run_paper_processing_task(
                 session.add(db_run)
                 session.commit()
 
+    _clear_active_run(run_id)
     # Signal the end of logging
     q.put(None)
 
 def start_paper_run(papers_to_process: List[Dict[str, str]], emails_fetched: int = 0) -> Run:
     """
     Creates a Run entry in the DB, launches the thread runner, and initializes the log queue.
+    If a run is already in progress, returns that run instead of starting another.
     """
+    existing = get_active_run()
+    if existing:
+        print(f"[*] Run {existing.id} is already in progress; not starting a new run.")
+        return existing
+
     with Session(engine) as session:
         db_run = Run(
             status="running",
@@ -381,6 +555,7 @@ def start_paper_run(papers_to_process: List[Dict[str, str]], emails_fetched: int
 
     q = queue.Queue()
     active_logs[run_id] = q
+    _set_active_run(run_id)
 
     t = threading.Thread(
         target=run_paper_processing_task,
@@ -419,6 +594,7 @@ def run_uploaded_paper_task(
                     session.commit()
             if os.path.exists(file_path):
                 os.remove(file_path)
+            _clear_active_run(run_id)
             q.put(None)
             return
 
@@ -436,8 +612,14 @@ def run_uploaded_paper_task(
                     session.commit()
             if os.path.exists(file_path):
                 os.remove(file_path)
+            _clear_active_run(run_id)
             q.put(None)
             return
+
+        raw_chars = len(text)
+        text, was_truncated = paper_retriever.prepare_paper_text(text)
+        access_info = f"Text extracted from a user-uploaded PDF; {raw_chars} characters extracted"
+        access_info += "; middle of the paper truncated to fit the context budget." if was_truncated else "."
 
         # 3. Extract title
         print("[+] Extracting paper title using LLM...")
@@ -450,8 +632,8 @@ def run_uploaded_paper_task(
         try:
             current_interests = ensure_interests_file()
             print(f"[+] Generating summary report using model: {config.LM_STUDIO_MODEL}...")
-            report = agent.generate_paper_report(title, "Uploaded File", text, current_interests)
-            report = f"# {title}\n\n**Source**: Uploaded PDF ({original_filename})\n\n---\n\n" + report
+            report = agent.generate_paper_report(title, "Uploaded File", text, current_interests, access_info)
+            report = f"# {title}\n\n**Source**: Uploaded PDF ({original_filename})\n\n**Extraction**: {access_info}\n\n---\n\n" + report
 
             # Save report file
             os.makedirs(config.REPORTS_DIR, exist_ok=True)
@@ -513,14 +695,24 @@ def run_uploaded_paper_task(
                 except Exception as clean_err:
                     print(f"[-] Error removing temp file: {clean_err}")
 
-        # Signal end of queue
-        q.put(None)
+    _clear_active_run(run_id)
+    # Signal end of queue
+    q.put(None)
 
 def start_uploaded_paper_run(file_path: str, original_filename: str) -> Run:
     """
     Creates a Run entry in the DB, launches the thread runner for the uploaded file,
     and initializes the log queue.
     """
+    existing = get_active_run()
+    if existing:
+        # Unlike Gmail runs, silently attaching to another run would drop the uploaded file
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise RuntimeError(
+            f"Run {existing.id} is already in progress. Wait for it to finish before uploading."
+        )
+
     with Session(engine) as session:
         db_run = Run(
             status="running",
@@ -533,6 +725,7 @@ def start_uploaded_paper_run(file_path: str, original_filename: str) -> Run:
 
     q = queue.Queue()
     active_logs[run_id] = q
+    _set_active_run(run_id)
 
     t = threading.Thread(
         target=run_uploaded_paper_task,

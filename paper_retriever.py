@@ -5,7 +5,7 @@ from pathlib import Path
 import requests
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
-from pypdf import PdfReader
+import pymupdf
 import agent
 
 import config
@@ -31,15 +31,16 @@ def resolve_url(url, timeout=10):
 
 def extract_text_from_pdf(pdf_bytes):
     """
-    Extracts text from PDF bytes using pypdf.
+    Extracts text from PDF bytes using PyMuPDF.
+    sort=True orders blocks by position, which keeps two-column
+    academic layouts in natural reading order.
     """
-    pdf_file = io.BytesIO(pdf_bytes)
-    reader = PdfReader(pdf_file)
     text_content = []
-    for page_num, page in enumerate(reader.pages):
-        text = page.extract_text()
-        if text:
-            text_content.append(text)
+    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
+        for page in doc:
+            text = page.get_text("text", sort=True)
+            if text and text.strip():
+                text_content.append(text)
     return "\n\n".join(text_content)
 
 def scrape_html_text(html_content):
@@ -218,7 +219,78 @@ def learn_rules_for_domain(url, domain, html_content, attempt=1, error_context=N
             write_none_rule(domain)
             return None
 
+REFERENCE_HEADINGS = re.compile(
+    r'^\s*(?:\d+\.?\s*)?(references|bibliography|works cited)\s*:?\s*$',
+    re.IGNORECASE | re.MULTILINE
+)
+
+def strip_references(text):
+    """
+    Cuts the text at the last references/bibliography heading, provided it appears
+    in the latter part of the document (to avoid cutting at a table-of-contents entry).
+    """
+    matches = list(REFERENCE_HEADINGS.finditer(text))
+    if not matches:
+        return text
+    cut_pos = matches[-1].start()
+    if cut_pos > len(text) * 0.3:
+        print(f"[+] Stripped references section ({len(text) - cut_pos} chars removed).")
+        return text[:cut_pos]
+    return text
+
+def truncate_to_budget(text, max_chars=None):
+    """
+    Fits text into the configured character budget, keeping the start (abstract,
+    intro, methods) and the end (conclusion) since those carry the most signal.
+    Returns (text, was_truncated).
+    """
+    if max_chars is None:
+        max_chars = config.MAX_PAPER_CHARS
+    if len(text) <= max_chars:
+        return text, False
+    head_len = int(max_chars * 0.75)
+    tail_len = max_chars - head_len
+    truncated = (
+        text[:head_len]
+        + "\n\n[... middle of paper truncated to fit the model's context window ...]\n\n"
+        + text[-tail_len:]
+    )
+    print(f"[+] Truncated paper text from {len(text)} to ~{max_chars} chars (kept start and end).")
+    return truncated, True
+
+def prepare_paper_text(text):
+    """
+    Applies reference stripping and budget truncation. Returns (text, was_truncated).
+    """
+    text = strip_references(text)
+    return truncate_to_budget(text)
+
+def retrieve_paper(url, timeout=15):
+    """
+    Retrieves paper text plus factual info on how it was obtained.
+    Returns a dict: {"text": str, "source": "pdf"|"html", "raw_chars": int, "truncated": bool}
+    or None if retrieval failed.
+    """
+    raw = _retrieve_raw(url, timeout)
+    if not raw or not raw.get("text"):
+        return None
+    raw_chars = len(raw["text"])
+    text, truncated = prepare_paper_text(raw["text"])
+    return {
+        "text": text,
+        "source": raw["source"],
+        "raw_chars": raw_chars,
+        "truncated": truncated,
+    }
+
 def retrieve_paper_text(url, timeout=15):
+    """
+    Backwards-compatible wrapper returning prepared text only.
+    """
+    result = retrieve_paper(url, timeout)
+    return result["text"] if result else None
+
+def _retrieve_raw(url, timeout=15):
     """
     Retrieves the full text of a paper from a URL.
     Supports:
@@ -226,6 +298,7 @@ def retrieve_paper_text(url, timeout=15):
     - Domain specific URL rules (loaded dynamically from url/rules.json)
     - Automatically discovers rules for new domains using LLM agent
     - Fallback to HTML scraping
+    Returns {"text": str, "source": "pdf"|"html"} or None.
     """
     import academic_api
 
@@ -246,7 +319,7 @@ def retrieve_paper_text(url, timeout=15):
                 pdf_bytes = response.content
                 text = extract_text_from_pdf(pdf_bytes)
                 if text.strip():
-                    return text
+                    return {"text": text, "source": "pdf"}
                 else:
                     print("Warning: Extracted PDF text from Academic API was empty. Falling back to web scraper.")
     except Exception as api_err:
@@ -307,7 +380,7 @@ def retrieve_paper_text(url, timeout=15):
                 pdf_bytes = response.content
                 text = extract_text_from_pdf(pdf_bytes)
                 if text.strip():
-                    return text
+                    return {"text": text, "source": "pdf"}
                 else:
                     print("Warning: Extracted PDF text is empty. Trying fallback scraper on landing page.")
             else:
@@ -317,7 +390,7 @@ def retrieve_paper_text(url, timeout=15):
         response = requests.get(resolved_url, headers=HEADERS, timeout=timeout)
         response.raise_for_status()
         text = scrape_html_text(response.text)
-        return text
+        return {"text": text, "source": "html"}
 
     except Exception as e:
         print(f"Error retrieving paper text from {resolved_url}: {e}")

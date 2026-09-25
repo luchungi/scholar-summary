@@ -53,6 +53,9 @@ def ensure_paper_rating_columns():
         if "relevance_rating" not in columns:
             print("[*] Migrating: Adding relevance_rating column to paper table...")
             conn.execute(text("ALTER TABLE paper ADD COLUMN relevance_rating FLOAT"))
+        if "skip_reason" not in columns:
+            print("[*] Migrating: Adding skip_reason column to paper table...")
+            conn.execute(text("ALTER TABLE paper ADD COLUMN skip_reason TEXT"))
 
 def sync_existing_paper_ratings():
     import os
@@ -323,9 +326,9 @@ def save_profile(req: ProfileSaveRequest):
 @app.get("/api/papers/failed")
 def list_failed_papers(session: Session = Depends(get_session)):
     """
-    Lists papers that failed during processing.
+    Lists papers that failed during processing or were skipped by the relevance pre-filter.
     """
-    stmt = select(Paper).where(Paper.status == "failed").order_by(Paper.date_processed.desc())
+    stmt = select(Paper).where(Paper.status.in_(["failed", "skipped"])).order_by(Paper.date_processed.desc())
     return session.exec(stmt).all()
 
 # Delete Endpoints
@@ -352,10 +355,10 @@ def delete_report(paper_id: int, session: Session = Depends(get_session)):
 @app.delete("/api/papers/failed/{paper_id}")
 def delete_failed_paper(paper_id: int, session: Session = Depends(get_session)):
     """
-    Deletes a failed paper log entry from the database.
+    Deletes a failed or skipped paper log entry from the database.
     """
     paper = session.get(Paper, paper_id)
-    if not paper or paper.status != "failed":
+    if not paper or paper.status not in ("failed", "skipped"):
         raise HTTPException(status_code=404, detail="Failed paper record not found")
 
     session.delete(paper)
