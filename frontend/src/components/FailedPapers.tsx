@@ -6,10 +6,13 @@ interface FailedPaper {
   title: string;
   url: string;
   date_processed: string;
+  status: string; // "failed" | "skipped"
+  skip_reason?: string | null;
+  relevance_rating?: number | null;
 }
 
 interface FailedPapersProps {
-  onStartSync: (papers: { title: string; url: string }[], emailsFetched: number) => void;
+  onStartSync: (papers: { title: string; url: string; force?: string }[], emailsFetched: number) => void;
 }
 
 export default function FailedPapers({ onStartSync }: FailedPapersProps) {
@@ -39,21 +42,10 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
   const handleRetry = async (paper: FailedPaper) => {
     setRetryingId(paper.id);
     try {
-      const res = await fetch(`${API_URL}/api/runs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          papers: [{ title: paper.title, url: paper.url }],
-          emails_fetched: 0
-        })
-      });
-
-      if (!res.ok) {
-        throw new Error(await res.text());
-      }
-      
-      // Start logs sync in App.tsx
-      onStartSync([{ title: paper.title, url: paper.url }], 0);
+      // App.tsx's handleStartSync creates the run via POST /api/runs and opens the logs panel.
+      // Do NOT also POST here, or the paper gets processed twice concurrently.
+      // force bypasses the relevance pre-filter so a manual retry always gets a full analysis.
+      onStartSync([{ title: paper.title, url: paper.url, force: 'true' }], 0);
     } catch (e: any) {
       alert(`Retry failed to start: ${e.message || e}`);
     } finally {
@@ -82,8 +74,8 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
     <div className="failed-papers-tab fade-in">
       <div className="tab-header">
         <div className="title-desc">
-          <h2>Failed Extraction Retries</h2>
-          <p>These papers could not be scraped or summarized (e.g., due to connection dropouts, paywalls, or PDF errors). You can trigger a retry below.</p>
+          <h2>Failed & Skipped Papers</h2>
+          <p>Papers that could not be scraped or summarized (connection dropouts, paywalls, PDF errors), plus papers the relevance pre-filter skipped. Retry an extraction or force a full analysis below.</p>
         </div>
       </div>
 
@@ -105,8 +97,12 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
               <div key={paper.id} className="failed-card glass-panel">
                 <div className="card-header flex justify-between items-center">
                   <div className="flex items-center gap-2">
-                    <AlertCircle size={16} className="text-red-500" />
-                    <span className="card-badge">Failed Paper #{paper.id}</span>
+                    <AlertCircle size={16} className={paper.status === 'skipped' ? 'text-amber-500' : 'text-red-500'} />
+                    <span className="card-badge">
+                      {paper.status === 'skipped'
+                        ? `Skipped (relevance ${paper.relevance_rating ?? '?'}/5) #${paper.id}`
+                        : `Failed Paper #${paper.id}`}
+                    </span>
                   </div>
                   <button 
                     onClick={() => handleDeleteFailed(paper.id)}
@@ -118,6 +114,9 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
                 </div>
                 <div className="card-body">
                   <h3 className="paper-title">{paper.title}</h3>
+                  {paper.status === 'skipped' && paper.skip_reason && (
+                    <p className="skip-reason">{paper.skip_reason}</p>
+                  )}
                   <a href={paper.url} target="_blank" rel="noopener noreferrer" className="paper-url">
                     <LinkIcon size={12} />
                     {paper.url}
@@ -138,7 +137,7 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
                     ) : (
                       <RefreshCw size={12} />
                     )}
-                    Retry Extraction
+                    {paper.status === 'skipped' ? 'Analyze Anyway' : 'Retry Extraction'}
                   </button>
                 </div>
               </div>
@@ -273,6 +272,19 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
         }
         .text-red-500 {
           color: var(--accent-red);
+        }
+        .text-amber-500 {
+          color: #f59e0b;
+        }
+        .skip-reason {
+          font-size: 12px;
+          color: var(--text-muted);
+          font-style: italic;
+          line-height: 1.4;
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
         }
         .date-info {
           display: flex;

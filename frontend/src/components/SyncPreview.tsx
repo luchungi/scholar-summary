@@ -4,6 +4,9 @@ import { Mail, Check, X, ClipboardList, RefreshCw } from 'lucide-react';
 interface LinkItem {
   title: string;
   url: string;
+  previous_status?: 'success' | 'failed' | 'skipped';
+  match_type?: 'url' | 'id' | 'title';
+  matched_title?: string;
 }
 
 interface AlertItem {
@@ -27,11 +30,22 @@ export default function SyncPreview({ alerts, onClose, onStartSync }: SyncPrevie
     alerts.forEach((alert) => {
       alert.links.forEach((link) => {
         const key = `${link.url}::${link.title}`;
-        map[key] = { title: link.title, url: link.url, checked: true };
+        // Pre-deselect papers already analyzed or previously skipped as low-relevance;
+        // previously failed papers stay ticked so they get retried.
+        const preDeselect = link.previous_status === 'success' || link.previous_status === 'skipped';
+        map[key] = { title: link.title, url: link.url, checked: !preDeselect };
       });
     });
     return map;
   });
+
+  const matchBadge = (link: LinkItem): { text: string; cls: string } | null => {
+    if (!link.previous_status) return null;
+    const how = link.match_type === 'url' ? 'same link' : link.match_type === 'id' ? 'same paper ID' : 'similar title';
+    if (link.previous_status === 'success') return { text: `Already analyzed (${how})`, cls: 'badge-done' };
+    if (link.previous_status === 'skipped') return { text: `Previously skipped as low relevance (${how})`, cls: 'badge-skip' };
+    return { text: `Previously failed (${how}) — will retry`, cls: 'badge-fail' };
+  };
 
   const handleToggle = (key: string) => {
     setSelectedMap((prev) => ({
@@ -127,6 +141,17 @@ export default function SyncPreview({ alerts, onClose, onStartSync }: SyncPrevie
                           </div>
                           <div className="paper-info">
                             <span className="paper-title">{link.title}</span>
+                            {(() => {
+                              const badge = matchBadge(link);
+                              return badge ? (
+                                <span
+                                  className={`history-badge ${badge.cls}`}
+                                  title={link.match_type === 'title' && link.matched_title ? `Matched: ${link.matched_title}` : undefined}
+                                >
+                                  {badge.text}
+                                </span>
+                              ) : null;
+                            })()}
                             <span className="paper-url">{link.url}</span>
                           </div>
                         </div>
@@ -325,6 +350,30 @@ export default function SyncPreview({ alerts, onClose, onStartSync }: SyncPrevie
           font-size: 12px;
           color: var(--text-muted);
           word-break: break-all;
+        }
+        .history-badge {
+          display: inline-block;
+          align-self: flex-start;
+          font-size: 11px;
+          font-weight: 500;
+          padding: 2px 8px;
+          border-radius: 10px;
+          margin: 2px 0;
+        }
+        .badge-done {
+          color: #34d399;
+          background: rgba(52, 211, 153, 0.1);
+          border: 1px solid rgba(52, 211, 153, 0.25);
+        }
+        .badge-skip {
+          color: #f59e0b;
+          background: rgba(245, 158, 11, 0.1);
+          border: 1px solid rgba(245, 158, 11, 0.25);
+        }
+        .badge-fail {
+          color: #f87171;
+          background: rgba(248, 113, 113, 0.1);
+          border: 1px solid rgba(248, 113, 113, 0.25);
         }
         .no-papers {
           padding: 16px;

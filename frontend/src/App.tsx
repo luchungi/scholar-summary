@@ -23,6 +23,7 @@ import ModelLoadTerminal from './components/ModelLoadTerminal';
 interface LinkItem {
   title: string;
   url: string;
+  force?: string; // "true" bypasses the relevance pre-filter gate (used by retries)
 }
 
 export default function App() {
