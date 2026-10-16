@@ -22,8 +22,10 @@ from backend.models import Run, Paper, EmailAlert
 from backend.services import (
     get_latest_alerts_from_gmail,
     start_paper_run,
-    active_logs
+    active_logs,
+    get_active_run
 )
+from backend.framework_manager import FrameworkManager
 import agent
 import model_settings
 import paper_retriever
@@ -109,6 +111,9 @@ class ModelSettingsRequest(BaseModel):
     model_key: str
     temperature: Optional[float] = None  # None clears the override (use creator guidance)
     thinking: Optional[bool] = None      # None clears the override (use REPORT_THINKING)
+
+class FrameworkSwitchRequest(BaseModel):
+    framework: str
 
 # Endpoints
 @app.get("/api/alerts")
@@ -371,79 +376,70 @@ def delete_failed_paper(paper_id: int, session: Session = Depends(get_session)):
     session.commit()
     return {"status": "success", "message": "Failed paper record deleted"}
 
-# Helper to modify .env file
-def update_env_file(model_key: str):
-    env_path = Path(__file__).resolve().parents[1] / ".env"
-    if env_path.exists():
-        content = env_path.read_text(encoding="utf-8")
-        lines = content.splitlines()
-        updated = False
-        for idx, line in enumerate(lines):
-            if line.strip().startswith("LM_STUDIO_MODEL="):
-                lines[idx] = f"LM_STUDIO_MODEL=openai:{model_key}"
-                updated = True
-                break
-        if not updated:
-            lines.append(f"LM_STUDIO_MODEL=openai:{model_key}")
-        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+# LLM Framework Endpoints
+@app.get("/api/framework")
+def get_framework_info():
+    active_run = get_active_run()
+    return {
+        "framework": config.get_active_framework(),
+        "available": ["lmstudio", "omlx"],
+        "active_run": active_run is not None,
+        "active_run_id": active_run.id if active_run else None,
+    }
 
-# Helper to check currently loaded model in memory
-def get_loaded_model_in_memory() -> Optional[str]:
-    try:
-        res = subprocess.run("lms ps", shell=True, capture_output=True, text=True)
-        lines = res.stdout.splitlines()
-        for line in lines:
-            line_str = line.strip()
-            if not line_str or line_str.startswith("IDENTIFIER"):
-                continue
-            parts = line_str.split()
-            if parts:
-                return parts[0]
-    except Exception as e:
-        print(f"[-] Error calling lms ps: {e}")
-    return None
+@app.post("/api/framework/switch")
+def switch_framework(req: FrameworkSwitchRequest):
+    active_run = get_active_run()
+    if active_run:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot switch framework while a paper analysis run is in progress."
+        )
+    return StreamingResponse(
+        FrameworkManager.stream_switch_framework(req.framework),
+        media_type="text/event-stream"
+    )
 
-# LM Studio Server Controls
+@app.get("/api/framework/switch/stream")
+def stream_switch_framework(framework: str):
+    active_run = get_active_run()
+    if active_run:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot switch framework while a paper analysis run is in progress."
+        )
+    return StreamingResponse(
+        FrameworkManager.stream_switch_framework(framework),
+        media_type="text/event-stream"
+    )
+
+# Server Controls
 @app.get("/api/server/status")
 def get_server_status():
     """
-    Checks the status of the LM Studio server using 'lms status'.
+    Checks the status of the active LLM server (LM Studio or oMLX).
     """
-    try:
-        import re
-        res = subprocess.run("lms status", shell=True, capture_output=True, text=True)
-        if re.search(r'Server:\s*ON', res.stdout, re.IGNORECASE):
-            return {"status": "ON"}
-        return {"status": "OFF"}
-    except Exception as e:
-        print(f"[-] Error checking server status: {e}")
-        return {"status": "OFF", "error": str(e)}
+    return FrameworkManager.get_server_status()
 
 @app.post("/api/server/start")
 def start_server():
     """
-    Starts the LM Studio server using 'lms server start'.
+    Starts the active LLM server.
     """
-    try:
-        res = subprocess.run("lms server start", shell=True, capture_output=True, text=True)
-        if res.returncode == 0 or "already running" in res.stdout.lower() or "success" in res.stdout.lower():
-            return {"status": "success", "detail": res.stdout.strip()}
-        raise HTTPException(status_code=500, detail=f"Failed to start server: {res.stderr or res.stdout}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    res = FrameworkManager.start_server()
+    if res.get("status") == "success":
+        return res
+    raise HTTPException(status_code=500, detail=res.get("detail", "Failed to start server"))
 
 @app.post("/api/server/stop")
 def stop_server():
     """
-    Stops the LM Studio server using 'lms server stop'.
+    Stops the active LLM server.
     """
-    try:
-        res = subprocess.run("lms server stop", shell=True, capture_output=True, text=True)
-        if res.returncode == 0 or "stopped" in res.stdout.lower() or "success" in res.stdout.lower():
-            return {"status": "success", "detail": res.stdout.strip()}
-        raise HTTPException(status_code=500, detail=f"Failed to stop server: {res.stderr or res.stdout}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    res = FrameworkManager.stop_server()
+    if res.get("status") == "success":
+        return res
+    raise HTTPException(status_code=500, detail=res.get("detail", "Failed to stop server"))
 
 @app.post("/api/shutdown")
 def shutdown_backend(background_tasks: BackgroundTasks):
@@ -459,45 +455,13 @@ def shutdown_backend(background_tasks: BackgroundTasks):
     background_tasks.add_task(perform_shutdown)
     return {"status": "success", "detail": "Backend server is shutting down..."}
 
-# LM Studio Model Management
+# Model Management
 @app.get("/api/models")
-def list_lm_studio_models():
+def list_models():
     """
-    Lists available local models in LM Studio using CLI 'lms ls' and identifies loaded models.
+    Lists available local models in the active framework and identifies loaded models.
     """
-    try:
-        # Check what is currently loaded in memory
-        loaded_in_mem = get_loaded_model_in_memory()
-
-        # Run lms ls
-        res_ls = subprocess.run("lms ls", shell=True, capture_output=True, text=True)
-        lines = res_ls.stdout.splitlines()
-
-        models = []
-        for line in lines:
-            if "Local" in line:
-                parts = [p.strip() for p in line.split("  ") if p.strip()]
-                if len(parts) >= 4:
-                    key_with_variant = parts[0]
-                    # Strip out (X variants)
-                    key = key_with_variant.split(" (")[0]
-                    size = parts[2]
-                    # A model is loaded if it matches the memory model identifier
-                    is_loaded = (loaded_in_mem == key) if loaded_in_mem else ("✓ LOADED" in line or "LOADED" in line)
-
-                    if "embedding" not in key.lower():
-                        models.append({
-                            "key": key,
-                            "size": size,
-                            "loaded": is_loaded
-                        })
-        return models
-    except Exception as e:
-        # Fallback if command fails or LM studio CLI is missing
-        print(f"[-] Error calling lms CLI: {e}")
-        # Return fallback list matching config or empty
-        current_model = config.LM_STUDIO_MODEL.replace("openai:", "")
-        return [{"key": current_model, "size": "Unknown", "loaded": True}]
+    return FrameworkManager.list_models()
 
 def _model_settings_payload(model_key: str):
     return {
@@ -527,131 +491,27 @@ def update_model_settings(req: ModelSettingsRequest):
     return _model_settings_payload(req.model_key)
 
 @app.post("/api/models/load")
-def load_lm_studio_model(req: ModelLoadRequest, background_tasks: BackgroundTasks):
+def load_model(req: ModelLoadRequest):
     """
-    Commands LM Studio to load the selected model, updating the env config in memory and on disk.
+    Loads or unloads the selected model in the active framework.
     """
-    try:
-        # Check what is currently loaded
-        loaded_model = get_loaded_model_in_memory()
-        
-        if req.model_key == "none":
-            if loaded_model:
-                subprocess.run("lms unload --all", shell=True, capture_output=True)
-            config.LM_STUDIO_MODEL = ""
-            update_env_file("")
-            return {"status": "success", "loaded": "none"}
-
-        if loaded_model == req.model_key:
-            config.LM_STUDIO_MODEL = f"openai:{req.model_key}"
-            update_env_file(req.model_key)
-            return {"status": "success", "loaded": req.model_key}
-
-        # If another model is active, unload it first
-        if loaded_model:
-            subprocess.run("lms unload --all", shell=True, capture_output=True)
-
-        # Update config dynamically in Python memory
-        config.LM_STUDIO_MODEL = f"openai:{req.model_key}"
-        # Update .env file
-        update_env_file(req.model_key)
-
-        # Load model using lms CLI
-        cmd = f"lms load {req.model_key} -y"
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-
-        if res.returncode != 0:
-            raise HTTPException(status_code=500, detail=f"LM Studio CLI failed to load model: {res.stderr}")
-
-        return {"status": "success", "loaded": req.model_key}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    gen = FrameworkManager.stream_load_model(req.model_key)
+    last_msg = ""
+    for chunk in gen:
+        last_msg = chunk
+    if "[ERROR]" in last_msg:
+        raise HTTPException(status_code=500, detail=last_msg)
+    return {"status": "success", "loaded": req.model_key}
 
 @app.get("/api/models/load/stream")
 def stream_load_model(model_key: str):
     """
     SSE stream endpoint to unload existing models and load the selected one.
     """
-    def load_generator():
-        yield "data: Checking currently loaded models in memory...\n\n"
-        loaded_model = get_loaded_model_in_memory()
-
-        if model_key == "none":
-            if loaded_model:
-                yield f"data: Active model in memory is '{loaded_model}'. Unloading...\n\n"
-                try:
-                    unload_res = subprocess.run("lms unload --all", shell=True, capture_output=True, text=True)
-                    if unload_res.returncode == 0:
-                        yield "data: Unloaded all memory models successfully.\n\n"
-                        config.LM_STUDIO_MODEL = ""
-                        update_env_file("")
-                        yield "data: [SUCCESS]\n\n"
-                    else:
-                        yield f"data: [ERROR] Warning while unloading: {unload_res.stderr.strip()}\n\n"
-                except Exception as e:
-                    yield f"data: [ERROR] Error unloading model: {e}\n\n"
-            else:
-                yield "data: No active model in memory to unload.\n\n"
-                config.LM_STUDIO_MODEL = ""
-                update_env_file("")
-                yield "data: [SUCCESS]\n\n"
-            return
-
-        if loaded_model == model_key:
-            yield f"data: Model '{model_key}' is already loaded in memory. Skipping reload.\n\n"
-            try:
-                config.LM_STUDIO_MODEL = f"openai:{model_key}"
-                update_env_file(model_key)
-            except Exception as e:
-                yield f"data: Error updating environment variables: {e}\n\n"
-            yield "data: [SUCCESS]\n\n"
-            return
-
-        if loaded_model:
-            yield f"data: Active model in memory is '{loaded_model}'. Unloading first...\n\n"
-            try:
-                unload_res = subprocess.run("lms unload --all", shell=True, capture_output=True, text=True)
-                if unload_res.returncode == 0:
-                    yield "data: Unloaded all memory models successfully.\n\n"
-                else:
-                    yield f"data: Warning while unloading: {unload_res.stderr.strip()}\n\n"
-            except Exception as e:
-                yield f"data: Error unloading current model: {e}\n\n"
-        else:
-            yield "data: No models currently active in memory.\n\n"
-
-        yield f"data: Executing command to load '{model_key}' into memory...\n\n"
-        try:
-            cmd = f"lms load {model_key} -y"
-            process = subprocess.Popen(
-                cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
-            )
-
-            while True:
-                line = process.stdout.readline()
-                if not line:
-                    break
-                line_clean = line.strip()
-                if line_clean:
-                    yield f"data: {line_clean}\n\n"
-
-            process.wait()
-            if process.returncode == 0:
-                config.LM_STUDIO_MODEL = f"openai:{model_key}"
-                update_env_file(model_key)
-                yield f"data: Successfully loaded model '{model_key}'!\n\n"
-                yield "data: [SUCCESS]\n\n"
-            else:
-                yield f"data: [ERROR] Failed to load model. Return code: {process.returncode}\n\n"
-        except Exception as e:
-            yield f"data: [ERROR] Exception during model load: {e}\n\n"
-
-    return StreamingResponse(load_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        FrameworkManager.stream_load_model(model_key),
+        media_type="text/event-stream"
+    )
 
 # Serve built frontend static files & SPA client routing
 frontend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))

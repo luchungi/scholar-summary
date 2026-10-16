@@ -5,6 +5,7 @@
 ## Next
 
 ## Done (most recent first)
+- [x] T-009 Add oMLX framework support alongside LM Studio with model unloading, server stopping, and auto-start on framework switch (2026-10-16, see decision 0005)
 - [x] T-008 Backfill ratings for ArchAgent v2 (3.2/4.0) and Explainable MARL (1.0/4.5) reports with the repair call (2026-09-25, local data only)
 - [x] T-007 Check section-6 ratings compliance for qwen at temperature 1.0, thinking on and off: both compliant without repair (2026-09-25, see 0004)
 - [x] T-006 UI: thinking toggle with capability label, per-model temperature pre-filled from creator guidance, read-only top_p/top_k (2026-09-25, commit 667185a)

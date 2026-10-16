@@ -44,6 +44,10 @@ export default function App() {
   const API_URL = import.meta.env.DEV ? 'http://localhost:8000' : '';
 
   // Model Manager state
+  const [framework, setFramework] = useState<'lmstudio' | 'omlx'>('lmstudio');
+  const [isSwitchingFramework, setIsSwitchingFramework] = useState(false);
+  const [switchProgressText, setSwitchProgressText] = useState('');
+  const [hasActiveRun, setHasActiveRun] = useState(false);
   const [models, setModels] = useState<{ key: string; size: string; loaded: boolean }[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [loadingModels, setLoadingModels] = useState(false);
@@ -51,6 +55,19 @@ export default function App() {
   const [showModelLoadTerminal, setShowModelLoadTerminal] = useState(false);
   const [modelToLoad, setModelToLoad] = useState('');
   const [serverStatus, setServerStatus] = useState<'ON' | 'OFF' | 'loading' | 'error'>('loading');
+
+  const fetchFramework = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/framework`);
+      if (res.ok) {
+        const data = await res.json();
+        setFramework(data.framework);
+        setHasActiveRun(Boolean(data.active_run));
+      }
+    } catch (e) {
+      console.error('Error fetching framework:', e);
+    }
+  };
 
   const fetchServerStatus = async (skipIfLoading = false) => {
     if (skipIfLoading && serverStatus === 'loading') return;
@@ -85,8 +102,59 @@ export default function App() {
     }
   };
 
+  const handleSwitchFramework = (newFramework: 'lmstudio' | 'omlx') => {
+    if (newFramework === framework || isSwitchingFramework) return;
+    if (hasActiveRun || activeRunId !== null) {
+      alert('Cannot switch framework while a paper analysis run is in progress.');
+      return;
+    }
+
+    setIsSwitchingFramework(true);
+    setSwitchProgressText(`Preparing to switch to ${newFramework === 'omlx' ? 'oMLX' : 'LM Studio'}...`);
+
+    const es = new EventSource(`${API_URL}/api/framework/switch/stream?framework=${encodeURIComponent(newFramework)}`);
+
+    es.onmessage = (event) => {
+      const text = event.data;
+      if (text.includes('[SUCCESS]')) {
+        es.close();
+        setIsSwitchingFramework(false);
+        setSwitchProgressText('');
+        setFramework(newFramework);
+        // Refresh server status & models
+        setTimeout(async () => {
+          const status = await fetchServerStatus();
+          if (status === 'ON') {
+            fetchModels();
+          } else {
+            setModels([]);
+            setSelectedModel('none');
+          }
+        }, 500);
+      } else if (text.includes('[ERROR]')) {
+        alert(text.replace('[ERROR]', '').trim());
+        es.close();
+        setIsSwitchingFramework(false);
+        setSwitchProgressText('');
+        fetchServerStatus();
+      } else {
+        setSwitchProgressText(text);
+      }
+    };
+
+    es.onerror = (err) => {
+      console.error('Framework switch SSE error:', err);
+      es.close();
+      setIsSwitchingFramework(false);
+      setSwitchProgressText('');
+      fetchServerStatus();
+      fetchFramework();
+    };
+  };
+
   useEffect(() => {
     const init = async () => {
+      await fetchFramework();
       const status = await fetchServerStatus();
       if (status === 'ON') {
         fetchModels();
@@ -97,7 +165,10 @@ export default function App() {
     };
     init();
 
-    const interval = setInterval(() => fetchServerStatus(true), 5000);
+    const interval = setInterval(() => {
+      fetchServerStatus(true);
+      fetchFramework();
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -260,71 +331,94 @@ export default function App() {
         <div className="model-manager-panel">
           <div className="model-manager-title">
             <Cpu size={14} className="text-purple-400" />
-            <span>LM Studio Model</span>
+            <span>LLM Framework</span>
           </div>
 
-          <div className="server-status-container">
-            <div className="server-status-info">
-              <span className="server-status-label">Server:</span>
-              <div className="flex items-center gap-1.5" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <div className={`status-indicator-dot ${serverStatus.toLowerCase()}`}></div>
-                <span className={`server-status-val ${serverStatus.toLowerCase()}`}>
-                  {serverStatus}
-                </span>
-              </div>
-            </div>
-            <button
-              onClick={handleToggleServer}
-              disabled={serverStatus === 'loading'}
-              className={`btn btn-server-toggle ${serverStatus === 'ON' ? 'stop' : 'start'}`}
+          <div className="framework-select-container">
+            <label className="framework-select-label">Framework:</label>
+            <select
+              value={framework}
+              onChange={(e) => handleSwitchFramework(e.target.value as 'lmstudio' | 'omlx')}
+              className="framework-select"
+              disabled={isSwitchingFramework || hasActiveRun || activeRunId !== null}
+              title={hasActiveRun || activeRunId !== null ? 'Cannot switch framework while a run is in progress' : ''}
             >
-              {serverStatus === 'loading' ? 'Updating...' : (serverStatus === 'ON' ? 'Stop Server' : 'Start Server')}
-            </button>
+              <option value="lmstudio">LM Studio</option>
+              <option value="omlx">oMLX</option>
+            </select>
           </div>
 
-          {serverStatus === 'ON' ? (
-            loadingModels ? (
-              <div className="model-loading-text">Loading model list...</div>
-            ) : models.length === 0 ? (
-              <div className="model-loading-text">No models found</div>
-            ) : (
-              <div className="model-select-container">
-                <select
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  className="model-select"
-                  disabled={showModelLoadTerminal}
-                >
-                  <option value="none">None (No Model Loaded)</option>
-                  {models.map((model) => (
-                    <option key={model.key} value={model.key}>
-                      {model.key} ({model.size}){model.loaded ? ' (Loaded)' : ''}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  onClick={handleLoadModel}
-                  className="btn btn-secondary btn-load-model"
-                  disabled={showModelLoadTerminal || !selectedModel || (selectedModel === 'none' && !models.some(m => m.loaded))}
-                >
-                  {selectedModel === 'none' ? 'Unload Model' : (showModelLoadTerminal ? 'Loading...' : 'Load Model')}
-                </button>
-                {models.find(m => m.loaded) && (
-                  <ModelSettingsPanel modelKey={models.find(m => m.loaded)!.key} />
-                )}
-              </div>
-            )
-          ) : (
-            <div className="server-offline-msg">
-              Start the LM Studio server to manage and load models.
+          {isSwitchingFramework ? (
+            <div className="framework-switching-progress">
+              <div className="inline-spinner"></div>
+              <span className="switching-text">{switchProgressText || 'Switching framework...'}</span>
             </div>
+          ) : (
+            <>
+              <div className="server-status-container">
+                <div className="server-status-info">
+                  <span className="server-status-label">Server:</span>
+                  <div className="flex items-center gap-1.5" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <div className={`status-indicator-dot ${serverStatus.toLowerCase()}`}></div>
+                    <span className={`server-status-val ${serverStatus.toLowerCase()}`}>
+                      {serverStatus}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={handleToggleServer}
+                  disabled={serverStatus === 'loading'}
+                  className={`btn btn-server-toggle ${serverStatus === 'ON' ? 'stop' : 'start'}`}
+                >
+                  {serverStatus === 'loading' ? 'Updating...' : (serverStatus === 'ON' ? 'Stop Server' : 'Start Server')}
+                </button>
+              </div>
+
+              {serverStatus === 'ON' ? (
+                loadingModels ? (
+                  <div className="model-loading-text">Loading model list...</div>
+                ) : models.length === 0 ? (
+                  <div className="model-loading-text">No models found</div>
+                ) : (
+                  <div className="model-select-container">
+                    <select
+                      value={selectedModel}
+                      onChange={(e) => setSelectedModel(e.target.value)}
+                      className="model-select"
+                      disabled={showModelLoadTerminal}
+                    >
+                      <option value="none">None (No Model Loaded)</option>
+                      {models.map((model) => (
+                        <option key={model.key} value={model.key}>
+                          {model.key} ({model.size}){model.loaded ? ' (Loaded)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={handleLoadModel}
+                      className="btn btn-secondary btn-load-model"
+                      disabled={showModelLoadTerminal || !selectedModel || (selectedModel === 'none' && !models.some(m => m.loaded))}
+                    >
+                      {selectedModel === 'none' ? 'Unload Model' : (showModelLoadTerminal ? 'Loading...' : 'Load Model')}
+                    </button>
+                    {models.find(m => m.loaded) && (
+                      <ModelSettingsPanel modelKey={models.find(m => m.loaded)!.key} />
+                    )}
+                  </div>
+                )
+              ) : (
+                <div className="server-offline-msg">
+                  Start the {framework === 'omlx' ? 'oMLX' : 'LM Studio'} server to manage and load models.
+                </div>
+              )}
+            </>
           )}
         </div>
 
         <div className="sidebar-footer">
           <div className="system-indicator">
             <div className={`indicator-dot ${serverStatus === 'ON' ? 'online' : 'offline'}`}></div>
-            <span>LLM Server {serverStatus === 'ON' ? 'Online' : 'Offline'}</span>
+            <span>LLM Server ({framework === 'omlx' ? 'oMLX' : 'LM Studio'}) {serverStatus === 'ON' ? 'Online' : 'Offline'}</span>
           </div>
           <button
             onClick={handleShutdownBackend}
@@ -497,6 +591,65 @@ export default function App() {
           font-size: 12px;
           font-weight: 500;
           color: #fff;
+        }
+        .framework-select-container {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 2px;
+        }
+        .framework-select-label {
+          font-size: 11px;
+          color: var(--text-dark);
+          font-weight: 500;
+          white-space: nowrap;
+        }
+        .framework-select {
+          flex: 1;
+          font-size: 11px;
+          padding: 4px 8px;
+          background: rgba(0, 0, 0, 0.25);
+          border: 1px solid var(--border-color);
+          border-radius: 6px;
+          color: var(--text-main);
+          outline: none;
+          cursor: pointer;
+        }
+        .framework-select:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+        .framework-select option {
+          background: var(--bg-dark);
+          color: var(--text-main);
+        }
+        .framework-switching-progress {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 8px;
+          padding: 12px 8px;
+          background: rgba(124, 58, 237, 0.08);
+          border: 1px dashed rgba(124, 58, 237, 0.3);
+          border-radius: 8px;
+          text-align: center;
+        }
+        .inline-spinner {
+          width: 18px;
+          height: 18px;
+          border: 2px solid rgba(168, 85, 247, 0.2);
+          border-top-color: #a855f7;
+          border-radius: 50%;
+          animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+        .switching-text {
+          font-size: 11px;
+          color: #c084fc;
+          font-family: var(--font-mono);
+          line-height: 1.3;
         }
         .model-loading-text {
           font-size: 11px;

@@ -95,7 +95,17 @@ def get_creator_guidance(model_key):
 
     if not all(k in guidance for k in ("temperature", "top_p", "top_k")):
         entry = _lms_model_entry(model_key)
-        for model_dir in _find_model_dirs(entry, base_keys):
+        candidate_dirs = _find_model_dirs(entry, base_keys)
+        if not candidate_dirs:
+            # Fallback for oMLX or models outside LMS manifest
+            for root in [LMSTUDIO_HOME / "models", Path.home() / ".omlx" / "models"]:
+                if root.exists():
+                    for p in root.rglob("*"):
+                        if p.is_dir() and p.name.lower() == model_key.lower():
+                            candidate_dirs.append(p)
+                            break
+
+        for model_dir in candidate_dirs:
             gen_config = model_dir / "generation_config.json"
             if not gen_config.exists():
                 continue

@@ -4,24 +4,24 @@ import re
 import config
 import model_settings
 
-# Initialize the aisuite Client
-# Configures the openai provider to hit LM Studio's local endpoint
-client = ai.Client(
-    provider_configs={
-        "openai": {
-            "base_url": config.LM_STUDIO_BASE_URL,
-            "api_key": config.LM_STUDIO_API_KEY,
-            # openai SDK defaults (600s timeout, 2 retries) silently re-send long local
-            # generations; see docs/agent/decisions/0001.
-            "timeout": config.LLM_TIMEOUT_SECONDS,
-            "max_retries": 0
+# Dynamic aisuite Client supporting LM Studio and oMLX
+def get_client() -> ai.Client:
+    return ai.Client(
+        provider_configs={
+            "openai": {
+                "base_url": config.get_active_base_url(),
+                "api_key": config.get_active_api_key(),
+                # openai SDK defaults (600s timeout, 2 retries) silently re-send long local
+                # generations; see docs/agent/decisions/0001.
+                "timeout": config.LLM_TIMEOUT_SECONDS,
+                "max_retries": 0
+            }
         }
-    }
-)
+    )
 
-# Thinking is always off for short calls (docs/agent/decisions/0002). LM Studio honours
-# reasoning_effort="none" and ignores it for models that cannot think.
-THINKING_OFF = {"reasoning_effort": "none"}
+# Thinking is always off for short calls (docs/agent/decisions/0002, 0005).
+# LM Studio honours reasoning_effort="none"; oMLX honours enable_thinking=False.
+THINKING_OFF = {"reasoning_effort": "none", "extra_body": {"enable_thinking": False}}
 
 RATINGS_BLOCK_TEMPLATE = """<ratings>
   <quality_rating>SCORE</quality_rating>
@@ -47,7 +47,7 @@ def extract_paper_title(paper_text):
     """
     Prompts the local LLM to extract the paper title from the paper text.
     """
-    print(f"Extracting paper title using model: {config.LM_STUDIO_MODEL}...")
+    print(f"Extracting paper title using model: {config.get_active_model()}...")
     snippet = paper_text[:3000]
     system_prompt = (
         "You are a helpful assistant. Your task is to extract the exact title of the academic paper "
@@ -87,8 +87,8 @@ Now, extract the title from the following snippet:
 ---
 Output:"""
     try:
-        response = client.chat.completions.create(
-            model=config.LM_STUDIO_MODEL,
+        response = get_client().chat.completions.create(
+            model=config.get_active_model(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -117,7 +117,7 @@ def assess_relevance(paper_title, paper_snippet, user_interests):
     Quick relevance pre-check from title + abstract snippet.
     Returns (score: float | None, reason: str).
     """
-    print(f"Pre-checking relevance using model: {config.LM_STUDIO_MODEL}...")
+    print(f"Pre-checking relevance using model: {config.get_active_model()}...")
     system_prompt = (
         "You are a strict research-triage assistant. Given a researcher's interest profile and the "
         "title plus opening text of a paper, rate how relevant the paper is to the profile on a 1-5 scale:\n"
@@ -143,8 +143,8 @@ Opening text of the paper:
 ---
 """
     try:
-        response = client.chat.completions.create(
-            model=config.LM_STUDIO_MODEL,
+        response = get_client().chat.completions.create(
+            model=config.get_active_model(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -168,7 +168,7 @@ def generate_paper_report(paper_title, paper_url, paper_text, user_interests, ac
     access_info: optional factual note (computed by the retriever) about how the text
     was obtained (PDF vs HTML scrape, char count, truncation), passed as fact to the model.
     """
-    print(f"Generating report using model: {config.LM_STUDIO_MODEL}...")
+    print(f"Generating report using model: {config.get_active_model()}...")
 
     system_prompt = (
         "You are a skeptical peer reviewer with expertise in quantitative finance, stochastic analysis, "
@@ -235,16 +235,20 @@ This section is REQUIRED and must be the last section. It contains ONLY the foll
 {RATINGS_BLOCK_TEMPLATE}
 """
 
-    settings = model_settings.resolve_report_settings(config.LM_STUDIO_MODEL)
+    settings = model_settings.resolve_report_settings(config.get_active_model())
     print(
         f"Report settings: thinking={'on' if settings['thinking'] else 'off'} ({settings['thinking_source']}), "
         f"temperature={settings['temperature']} ({settings['temperature_source']})"
     )
     # Thinking on: leave it to the model's default rather than forcing an effort level.
-    thinking_kwargs = {} if settings["thinking"] else THINKING_OFF
+    thinking_kwargs = (
+        {"extra_body": {"enable_thinking": True}}
+        if settings["thinking"]
+        else THINKING_OFF
+    )
     try:
-        response = client.chat.completions.create(
-            model=config.LM_STUDIO_MODEL,
+        response = get_client().chat.completions.create(
+            model=config.get_active_model(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -255,10 +259,11 @@ This section is REQUIRED and must be the last section. It contains ONLY the foll
         _log_usage(response)
         report = response.choices[0].message.content
     except Exception as e:
+        fw_name = config.get_active_framework().upper()
         raise ConnectionError(
-            f"Failed to communicate with LM Studio model '{config.LM_STUDIO_MODEL}' "
-            f"at {config.LM_STUDIO_BASE_URL}.\nDetails: {e}\n"
-            f"Please ensure LM Studio is running and the local server is started."
+            f"Failed to communicate with {fw_name} model '{config.get_active_model()}' "
+            f"at {config.get_active_base_url()}.\nDetails: {e}\n"
+            f"Please ensure {fw_name} is running and the local server is started."
         )
     return ensure_ratings_block(report)
 
@@ -282,8 +287,8 @@ def ensure_ratings_block(report):
         return report
     print("[*] Report is missing the <ratings> block; requesting it in a short follow-up call...")
     try:
-        response = client.chat.completions.create(
-            model=config.LM_STUDIO_MODEL,
+        response = get_client().chat.completions.create(
+            model=config.get_active_model(),
             messages=[
                 {"role": "system", "content": "You extract ratings from a paper review. Output ONLY the <ratings> block, nothing else."},
                 {"role": "user", "content": (
@@ -310,7 +315,7 @@ def update_user_interests(current_interests, user_feedback):
     """
     Prompts the local LLM to refine the user's interest profile based on their feedback.
     """
-    print(f"Updating interest profile using model: {config.LM_STUDIO_MODEL}...")
+    print(f"Updating interest profile using model: {config.get_active_model()}...")
 
     system_prompt = (
         "You are an expert Profile Manager Agent. Your role is to update a researcher's "
@@ -355,8 +360,8 @@ Feedback:
 Output:"""
 
     try:
-        response = client.chat.completions.create(
-            model=config.LM_STUDIO_MODEL,
+        response = get_client().chat.completions.create(
+            model=config.get_active_model(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -371,15 +376,16 @@ Output:"""
             cleaned = clean_llm_markdown(raw_output)
         return cleaned
     except Exception as e:
+        fw_name = config.get_active_framework().upper()
         raise ConnectionError(
-            f"Failed to communicate with LM Studio to update interests.\nDetails: {e}"
+            f"Failed to communicate with {fw_name} to update interests.\nDetails: {e}"
         )
 
 def propose_pdf_rule(url, html_links, error_context=None):
     """
     Prompts the local LLM to propose a PDF retrieval rule for a domain based on its HTML links.
     """
-    print(f"Proposing PDF retrieval rule using model: {config.LM_STUDIO_MODEL}...")
+    print(f"Proposing PDF retrieval rule using model: {config.get_active_model()}...")
 
     system_prompt = (
         "You are an expert Web Scraping and Automation Agent. Your task is to analyze the URL and the list of hyperlinks "
@@ -430,8 +436,8 @@ Please analyze this error, inspect the link structure again, and propose a DIFFE
 
     try:
         try:
-            response = client.chat.completions.create(
-                model=config.LM_STUDIO_MODEL,
+            response = get_client().chat.completions.create(
+                model=config.get_active_model(),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -441,8 +447,8 @@ Please analyze this error, inspect the link structure again, and propose a DIFFE
             )
         except Exception as json_err:
             print(f"[*] JSON Mode not supported or failed: {json_err}. Falling back to standard format.")
-            response = client.chat.completions.create(
-                model=config.LM_STUDIO_MODEL,
+            response = get_client().chat.completions.create(
+                model=config.get_active_model(),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}

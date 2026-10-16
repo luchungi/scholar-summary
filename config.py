@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -13,10 +14,65 @@ else:
 GMAIL_CREDENTIALS_PATH = os.getenv("GMAIL_CREDENTIALS_PATH", "credentials.json")
 GMAIL_TOKEN_PATH = os.getenv("GMAIL_TOKEN_PATH", "token.json")
 
+# LLM Framework Selection: 'lmstudio' or 'omlx'
+LLM_FRAMEWORK = os.getenv("LLM_FRAMEWORK", "lmstudio").lower()
+
 # LM Studio Configuration
 LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1")
-LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "openai:qwen2.5-7b-instruct")
+LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "openai:")
 LM_STUDIO_API_KEY = os.getenv("LM_STUDIO_API_KEY", "lm-studio")
+
+# oMLX Configuration
+def get_omlx_api_key() -> str:
+    env_key = os.getenv("OMLX_API_KEY")
+    if env_key:
+        return env_key
+    settings_path = Path.home() / ".omlx" / "settings.json"
+    if settings_path.exists():
+        try:
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+            return data.get("auth", {}).get("api_key", "")
+        except Exception:
+            pass
+    return ""
+
+OMLX_BASE_URL = os.getenv("OMLX_BASE_URL", "http://localhost:8001/v1")
+OMLX_MODEL = os.getenv("OMLX_MODEL", "openai:")
+OMLX_API_KEY = get_omlx_api_key()
+
+def get_active_framework() -> str:
+    global LLM_FRAMEWORK
+    return LLM_FRAMEWORK
+
+def get_active_base_url() -> str:
+    if get_active_framework() == "omlx":
+        return OMLX_BASE_URL
+    return LM_STUDIO_BASE_URL
+
+def get_active_model() -> str:
+    if get_active_framework() == "omlx":
+        return OMLX_MODEL
+    return LM_STUDIO_MODEL
+
+def get_active_api_key() -> str:
+    if get_active_framework() == "omlx":
+        global OMLX_API_KEY
+        if not OMLX_API_KEY:
+            OMLX_API_KEY = get_omlx_api_key()
+        return OMLX_API_KEY
+    return LM_STUDIO_API_KEY
+
+def set_active_framework(framework: str):
+    global LLM_FRAMEWORK
+    LLM_FRAMEWORK = framework.lower()
+
+def set_active_model(model_key: str):
+    global LM_STUDIO_MODEL, OMLX_MODEL
+    formatted = f"openai:{model_key}" if model_key and not model_key.startswith("openai:") else model_key
+    if get_active_framework() == "omlx":
+        OMLX_MODEL = formatted
+    else:
+        LM_STUDIO_MODEL = formatted
 
 # App configs
 INTERESTS_FILE = os.getenv("INTERESTS_FILE", "user_interests.md")
