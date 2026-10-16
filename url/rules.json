@@ -366,5 +366,40 @@
         "type": "direct"
       }
     ]
+  },
+  "ayushrj.me": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "frankschmid.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "anyszka.me": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "patents.google.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "hfthot-lab.eu": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
   }
 }
