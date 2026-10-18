@@ -151,6 +151,7 @@ class LogCapture:
 # contend for it. POST /api/runs returns the active run instead of starting another.
 _run_state_lock = threading.Lock()
 _active_run_id: Optional[int] = None
+_db_write_lock = threading.Lock()
 
 def get_active_run() -> Optional[Run]:
     with _run_state_lock:
@@ -324,22 +325,81 @@ def extract_web_page_title(url: str) -> Optional[str]:
         print(f"[-] Error auto-extracting web page title: {e}")
     return None
 
+def _record_failed_paper(run_id: int, url: str, title: str):
+    with _db_write_lock:
+        with Session(engine) as session:
+            stmt = select(Paper).where(Paper.url == url, Paper.status == "failed")
+            existing_failed = session.exec(stmt).first()
+            if not existing_failed:
+                db_paper = Paper(
+                    title=title,
+                    url=url,
+                    status="failed",
+                    run_id=run_id
+                )
+                session.add(db_paper)
+            else:
+                existing_failed.title = title
+                existing_failed.date_processed = datetime.now(timezone.utc).replace(tzinfo=None)
+                existing_failed.run_id = run_id
+                session.add(existing_failed)
+            session.commit()
+
+def _record_skipped_paper(run_id: int, url: str, title: str, gate_score: Optional[float], gate_reason: str):
+    with _db_write_lock:
+        with Session(engine) as session:
+            stmt = select(Paper).where(Paper.url == url, Paper.status == "skipped")
+            existing_skipped = session.exec(stmt).first()
+            if not existing_skipped:
+                existing_skipped = Paper(title=title, url=url, status="skipped", run_id=run_id)
+            existing_skipped.title = title
+            existing_skipped.relevance_rating = gate_score
+            existing_skipped.skip_reason = gate_reason
+            existing_skipped.date_processed = datetime.now(timezone.utc).replace(tzinfo=None)
+            existing_skipped.run_id = run_id
+            session.add(existing_skipped)
+            session.commit()
+
+def _record_success_paper(run_id: int, url: str, title: str, report_path: str, q_val: Optional[float], r_val: Optional[float]):
+    with _db_write_lock:
+        with Session(engine) as session:
+            db_paper = Paper(
+                title=title,
+                url=url,
+                status="success",
+                report_path=report_path,
+                run_id=run_id,
+                quality_rating=q_val,
+                relevance_rating=r_val
+            )
+            session.add(db_paper)
+            # Delete any previous failed/skipped records for this URL
+            stmt = select(Paper).where(
+                Paper.url == url,
+                Paper.status.in_(["failed", "skipped"])
+            )
+            for existing in session.exec(stmt).all():
+                session.delete(existing)
+            session.commit()
+
 def run_paper_processing_task(
     run_id: int,
     papers_to_process: List[Dict[str, str]],
     q: queue.Queue
 ):
     """
-    Synchronous task runner that compiles summaries, updates the SQLite tables,
-    and captures stdout to the queue.
+    Two-phase batch task runner (docs/agent/decisions/0006):
+    - Phase 1: Rapid prefetch, title extraction, and relevance gate (eliminates off-topic papers).
+    - Phase 2: Bounded review worker pool with staggered prompt prefill to protect unified memory.
     """
     with LogCapture(q):
         print(f"[+] Starting paper processing run {run_id} at {datetime.now()}")
-        print(f"[+] Papers to process: {len(papers_to_process)}")
+        print(f"[+] Papers in batch: {len(papers_to_process)}")
 
         success_count = 0
         failure_count = 0
         skipped_count = 0
+        counts_lock = threading.Lock()
 
         # Load user interests
         try:
@@ -348,14 +408,22 @@ def run_paper_processing_task(
             print(f"[-] Error loading user interests: {e}")
             current_interests = ""
 
+        # =========================================================================
+        # PHASE 1: Rapid Triage & Prefetch
+        # =========================================================================
+        print(f"\n{'=' * 60}")
+        print(f"[*] PHASE 1: Rapid Prefetch & Relevance Triage ({len(papers_to_process)} candidate papers)")
+        print(f"{'=' * 60}")
+
+        approved_papers = []
+
         for idx, paper_info in enumerate(papers_to_process, 1):
             title = paper_info.get("title", "").strip()
             url = paper_info.get("url")
             force = str(paper_info.get("force", "")).lower() in ("true", "1", "yes")
 
-            print("\n" + "=" * 60)
-            print(f"[{idx}/{len(papers_to_process)}] Fetching paper text for URL: {url}")
-            print("=" * 60)
+            short_label = title[:35] + "..." if len(title) > 35 else (title or url or "Paper")
+            print(f"\n[Triage {idx}/{len(papers_to_process)}: {short_label}] Fetching paper text from: {url}")
 
             # Fetch text
             paper_text = None
@@ -364,84 +432,47 @@ def run_paper_processing_task(
                 retrieval = paper_retriever.retrieve_paper(url)
                 paper_text = retrieval["text"] if retrieval else None
             except Exception as e:
-                print(f"[-] Error retrieving paper: {e}")
+                print(f"[Triage: {short_label}] [-] Error retrieving paper: {e}")
 
             if not paper_text:
-                print("[-] Skipping paper: could not retrieve text.")
-                failure_count += 1
-                with Session(engine) as session:
-                    db_title = title
-                    if not db_title or db_title in ("Manual URL Analysis", "Manual Input Paper", "Untitled"):
-                        db_title = extract_web_page_title(url) or "Manual Input Paper"
-
-                    # Check if this paper URL is already listed as failed (match by URL only)
-                    stmt = select(Paper).where(
-                        Paper.url == url,
-                        Paper.status == "failed"
-                    )
-                    existing_failed = session.exec(stmt).first()
-                    if not existing_failed:
-                        db_paper = Paper(
-                            title=db_title,
-                            url=url,
-                            status="failed",
-                            run_id=run_id
-                        )
-                        session.add(db_paper)
-                    else:
-                        existing_failed.title = db_title  # Update title if refined
-                        existing_failed.date_processed = datetime.now(timezone.utc).replace(tzinfo=None)
-                        existing_failed.run_id = run_id
-                        session.add(existing_failed)
-                    session.commit()
+                print(f"[Triage: {short_label}] [-] Could not retrieve text. Marked as failed.")
+                with counts_lock:
+                    failure_count += 1
+                db_title = title
+                if not db_title or db_title in ("Manual URL Analysis", "Manual Input Paper", "Untitled"):
+                    db_title = extract_web_page_title(url) or "Manual Input Paper"
+                _record_failed_paper(run_id, url, db_title)
                 continue
 
-            # If the title is generic, auto-extract the paper title
+            # Auto-extract title if generic
             if not title or title in ("Manual URL Analysis", "Manual Input Paper", "Untitled"):
-                print(f"[*] Title is generic. Extracting title from paper text using LLM...")
+                print(f"[Triage: {short_label}] [*] Extracting clean title from text using LLM...")
                 extracted_title = agent.extract_paper_title(paper_text)
                 if extracted_title:
                     title = extracted_title
-                    print(f"[+] Extracted clean title from paper text: {title}")
+                    print(f"[Triage: {short_label}] [+] Extracted clean title: {title}")
                 else:
-                    print(f"[*] Fallback: extracting title from web page metadata...")
+                    print(f"[Triage: {short_label}] [*] Fallback: extracting title from metadata...")
                     extracted_title = extract_web_page_title(url)
-                    if extracted_title:
-                        title = extracted_title
-                        print(f"[+] Extracted clean title from metadata: {title}")
-                    else:
-                        title = "Manual Input Paper"
+                    title = extracted_title if extracted_title else "Manual Input Paper"
 
-            print(f"[+] Processing paper: {title}")
-            print(f"[+] Retrieved {len(paper_text)} characters of text.")
+            short_label = title[:35] + "..." if len(title) > 35 else title
+            print(f"[Triage: {short_label}] [+] Retrieved {len(paper_text)} characters.")
 
-            # Relevance pre-filter gate: skip full analysis for off-profile papers
+            # Relevance pre-filter gate
             if config.RELEVANCE_GATE_ENABLED and not force:
                 gate_score, gate_reason = agent.assess_relevance(title, paper_text[:3000], current_interests)
                 if gate_score is not None and gate_score < config.RELEVANCE_GATE_THRESHOLD:
-                    print(f"[*] Skipping paper: relevance pre-check scored {gate_score}/5 "
-                          f"(threshold {config.RELEVANCE_GATE_THRESHOLD}). Reason: {gate_reason}")
-                    skipped_count += 1
-                    with Session(engine) as session:
-                        stmt = select(Paper).where(
-                            Paper.url == url,
-                            Paper.status == "skipped"
-                        )
-                        existing_skipped = session.exec(stmt).first()
-                        if not existing_skipped:
-                            existing_skipped = Paper(title=title, url=url, status="skipped", run_id=run_id)
-                        existing_skipped.title = title
-                        existing_skipped.relevance_rating = gate_score
-                        existing_skipped.skip_reason = gate_reason
-                        existing_skipped.date_processed = datetime.now(timezone.utc).replace(tzinfo=None)
-                        existing_skipped.run_id = run_id
-                        session.add(existing_skipped)
-                        session.commit()
+                    print(f"[Triage: {short_label}] [*] Skipped: relevance score {gate_score}/5 "
+                          f"< threshold {config.RELEVANCE_GATE_THRESHOLD}. Reason: {gate_reason}")
+                    with counts_lock:
+                        skipped_count += 1
+                    _record_skipped_paper(run_id, url, title, gate_score, gate_reason)
                     continue
                 elif gate_score is not None:
-                    print(f"[+] Relevance pre-check passed: {gate_score}/5. Proceeding to full analysis.")
+                    print(f"[Triage: {short_label}] [+] Passed relevance gate ({gate_score}/5).")
 
-            # Factual access note computed by the retriever (the LLM is told not to speculate)
+            # Factual access note computed by retriever
             if retrieval:
                 source_label = ("PDF (downloaded and parsed)" if retrieval["source"] == "pdf"
                                 else "HTML scrape of the landing page (full PDF may not have been accessible)")
@@ -450,83 +481,140 @@ def run_paper_processing_task(
             else:
                 access_info = None
 
-            # Generate summary report using LM Studio LLM
-            try:
-                report = agent.generate_paper_report(title, url, paper_text, current_interests, access_info)
-                header = f"# {title}\n\n**Link**: [{url}]({url})\n\n"
-                if access_info:
-                    header += f"**Source**: {access_info}\n\n"
-                report = header + "---\n\n" + report
+            approved_papers.append({
+                "title": title,
+                "url": url,
+                "paper_text": paper_text,
+                "access_info": access_info,
+            })
 
-                # Save markdown file
-                os.makedirs(config.REPORTS_DIR, exist_ok=True)
-                safe_title = sanitize_filename(title)
-                report_path = Path(config.REPORTS_DIR) / f"report_{safe_title}.md"
-                report_path.write_text(report, encoding="utf-8")
+        # =========================================================================
+        # PHASE 2: Bounded Review Pool with Staggered Prefill
+        # =========================================================================
+        print(f"\n{'=' * 60}")
+        print(f"[*] PHASE 2: Full Paper Reviews ({len(approved_papers)} paper(s) approved)")
+        print(f"{'=' * 60}")
 
-                print(f"[+] Report saved to {report_path}")
-                success_count += 1
+        if not approved_papers:
+            print("[*] No papers passed triage for full review.")
+        else:
+            max_concurrency = min(config.get_max_concurrent_reviews(), len(approved_papers))
+            ram_detected = config.get_system_ram_gb()
+            print(f"[+] Review concurrency: {max_concurrency} parallel slot(s) (detected RAM: {ram_detected:.1f} GB, cap: {config.get_max_concurrent_reviews()})")
 
-                # Save to database
-                q_val, r_val = extract_ratings(report)
-                with Session(engine) as session:
-                    db_paper = Paper(
-                        title=title,
-                        url=url,
-                        status="success",
-                        report_path=str(report_path),
-                        run_id=run_id,
-                        quality_rating=q_val,
-                        relevance_rating=r_val
-                    )
-                    session.add(db_paper)
+            paper_queue: queue.Queue = queue.Queue()
+            for p in approved_papers:
+                paper_queue.put(p)
 
-                    # Delete any previous failed/skipped records for this URL
-                    stmt = select(Paper).where(
-                        Paper.url == url,
-                        Paper.status.in_(["failed", "skipped"])
-                    )
-                    for existing in session.exec(stmt).all():
-                        session.delete(existing)
+            prefill_lock = threading.Lock()
+            concurrency_state = {"current_max": max_concurrency}
 
-                    session.commit()
+            def review_worker(slot_id: int):
+                nonlocal success_count, failure_count
+                with LogCapture(q):
+                    while not paper_queue.empty():
+                        if slot_id > concurrency_state["current_max"]:
+                            break
 
-            except Exception as e:
-                print(f"[-] Error generating report: {e}")
-                failure_count += 1
-                with Session(engine) as session:
-                    # Match by URL only
-                    stmt = select(Paper).where(
-                        Paper.url == url,
-                        Paper.status == "failed"
-                    )
-                    existing_failed = session.exec(stmt).first()
-                    if not existing_failed:
-                        db_paper = Paper(
-                            title=title,
-                            url=url,
-                            status="failed",
-                            run_id=run_id
-                        )
-                        session.add(db_paper)
-                    else:
-                        existing_failed.title = title
-                        existing_failed.date_processed = datetime.now(timezone.utc).replace(tzinfo=None)
-                        existing_failed.run_id = run_id
-                        session.add(existing_failed)
-                    session.commit()
+                        try:
+                            paper_data = paper_queue.get_nowait()
+                        except queue.Empty:
+                            break
+
+                        p_title = paper_data["title"]
+                        p_url = paper_data["url"]
+                        p_text = paper_data["paper_text"]
+                        p_access = paper_data["access_info"]
+                        short_t = p_title[:30] + "..." if len(p_title) > 30 else p_title
+                        slot_tag = f"[Slot {slot_id}: {short_t}]"
+
+                        print(f"\n{slot_tag} Waiting for prefill lock to avoid concurrent activation peak...")
+                        prefill_lock.acquire()
+                        prefill_released = False
+
+                        def on_first_token():
+                            nonlocal prefill_released
+                            if not prefill_released:
+                                prefill_released = True
+                                prefill_lock.release()
+                                print(f"{slot_tag} [+] Prefill completed; first token received. Prefill lock released.")
+
+                        try:
+                            print(f"{slot_tag} Starting report generation using model: {config.get_active_model()}...")
+                            report = agent.generate_paper_report(
+                                p_title, p_url, p_text, current_interests, p_access,
+                                on_first_token=on_first_token
+                            )
+                        except Exception as err:
+                            print(f"{slot_tag} [-] Error generating report: {err}")
+                            err_str = str(err).lower()
+                            # Check for slot rejection / busy errors to gracefully degrade
+                            if "busy" in err_str or "slot" in err_str or "overload" in err_str or "503" in err_str:
+                                print(f"{slot_tag} [!] Server rejected concurrent slot. Degrading to sequential execution (concurrency=1).")
+                                concurrency_state["current_max"] = 1
+                                paper_queue.put(paper_data)
+                                break
+
+                            with counts_lock:
+                                failure_count += 1
+                            _record_failed_paper(run_id, p_url, p_title)
+                            continue
+                        finally:
+                            if not prefill_released:
+                                prefill_released = True
+                                prefill_lock.release()
+
+                        # Save report and database record
+                        try:
+                            header = f"# {p_title}\n\n**Link**: [{p_url}]({p_url})\n\n"
+                            if p_access:
+                                header += f"**Source**: {p_access}\n\n"
+                            full_report = header + "---\n\n" + report
+
+                            os.makedirs(config.REPORTS_DIR, exist_ok=True)
+                            safe_title = sanitize_filename(p_title)
+                            report_path = Path(config.REPORTS_DIR) / f"report_{safe_title}.md"
+                            report_path.write_text(full_report, encoding="utf-8")
+                            print(f"{slot_tag} [+] Report saved to {report_path}")
+
+                            q_val, r_val = extract_ratings(full_report)
+                            _record_success_paper(run_id, p_url, p_title, str(report_path), q_val, r_val)
+                            with counts_lock:
+                                success_count += 1
+                        except Exception as save_err:
+                            print(f"{slot_tag} [-] Error saving report/database: {save_err}")
+                            with counts_lock:
+                                failure_count += 1
+                            _record_failed_paper(run_id, p_url, p_title)
+
+            # Launch worker threads
+            threads = []
+            for sid in range(1, max_concurrency + 1):
+                t = threading.Thread(target=review_worker, args=(sid,), name=f"ReviewWorker-{sid}")
+                threads.append(t)
+                t.start()
+
+            for t in threads:
+                t.join()
+
+            # If fallback occurred and any paper remained re-queued, finish sequentially
+            if not paper_queue.empty():
+                print(f"[*] Processing remaining {paper_queue.qsize()} paper(s) sequentially...")
+                concurrency_state["current_max"] = 1
+                review_worker(1)
 
         # Complete run updates
         print(f"\n[+] Run {run_id} finished! Succeeded: {success_count}, "
               f"Failed: {failure_count}, Skipped (low relevance): {skipped_count}")
-        with Session(engine) as session:
-            db_run = session.get(Run, run_id)
-            if db_run:
-                db_run.status = "completed" if failure_count == 0 else "failed"
-                db_run.papers_processed = success_count
-                db_run.papers_failed = failure_count
-                session.add(db_run)
-                session.commit()
+        with _db_write_lock:
+            with Session(engine) as session:
+                db_run = session.get(Run, run_id)
+                if db_run:
+                    db_run.status = "completed" if failure_count == 0 else "failed"
+                    db_run.papers_processed = success_count
+                    db_run.papers_failed = failure_count
+                    session.add(db_run)
+                    session.commit()
 
     _clear_active_run(run_id)
     # Signal the end of logging

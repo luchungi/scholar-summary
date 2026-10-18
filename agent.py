@@ -162,11 +162,13 @@ Opening text of the paper:
         print(f"[-] Error during relevance pre-check (paper will be analyzed anyway): {e}")
         return None, ""
 
-def generate_paper_report(paper_title, paper_url, paper_text, user_interests, access_info=None):
+def generate_paper_report(paper_title, paper_url, paper_text, user_interests, access_info=None, on_first_token=None):
     """
     Prompts the local LLM to analyze the paper and generate a report.
     access_info: optional factual note (computed by the retriever) about how the text
     was obtained (PDF vs HTML scrape, char count, truncation), passed as fact to the model.
+    on_first_token: optional callback invoked immediately when prompt prefill finishes
+    and the first token (or reasoning token) is emitted.
     """
     print(f"Generating report using model: {config.get_active_model()}...")
 
@@ -247,17 +249,58 @@ This section is REQUIRED and must be the last section. It contains ONLY the foll
         else THINKING_OFF
     )
     try:
-        response = get_client().chat.completions.create(
-            model=config.get_active_model(),
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=settings["temperature"],
-            **thinking_kwargs
-        )
-        _log_usage(response)
-        report = response.choices[0].message.content
+        if on_first_token:
+            chunks = []
+            first_token_notified = False
+            usage = None
+            try:
+                stream_resp = get_client().chat.completions.create(
+                    model=config.get_active_model(),
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    temperature=settings["temperature"],
+                    stream=True,
+                    **thinking_kwargs
+                )
+                for chunk in stream_resp:
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        usage = chunk.usage
+                    choices = getattr(chunk, "choices", None)
+                    if choices:
+                        delta = choices[0].delta
+                        content = getattr(delta, "content", None) or ""
+                        reasoning = getattr(delta, "reasoning_content", None) or ""
+                        if (content or reasoning) and not first_token_notified:
+                            first_token_notified = True
+                            try:
+                                on_first_token()
+                            except Exception:
+                                pass
+                        if content:
+                            chunks.append(content)
+                report = "".join(chunks)
+                if usage:
+                    _log_usage(type("UsageWrapper", (), {"usage": usage}))
+            finally:
+                if not first_token_notified and on_first_token:
+                    try:
+                        on_first_token()
+                    except Exception:
+                        pass
+        else:
+            response = get_client().chat.completions.create(
+                model=config.get_active_model(),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=settings["temperature"],
+                **thinking_kwargs
+            )
+            _log_usage(response)
+            report = response.choices[0].message.content
     except Exception as e:
         fw_name = config.get_active_framework().upper()
         raise ConnectionError(

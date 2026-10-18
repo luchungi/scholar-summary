@@ -106,6 +106,37 @@ MODEL_SETTINGS_PATH = os.getenv("MODEL_SETTINGS_PATH", "model_settings.json")
 RELEVANCE_GATE_ENABLED = os.getenv("RELEVANCE_GATE_ENABLED", "true").lower() in ("1", "true", "yes")
 RELEVANCE_GATE_THRESHOLD = float(os.getenv("RELEVANCE_GATE_THRESHOLD", "2.5"))
 
+# Concurrency & Batch Settings (docs/agent/decisions/0006)
+def get_system_ram_gb() -> float:
+    """Returns detected system RAM in GB, or a safe default of 16.0."""
+    try:
+        import subprocess
+        res = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=2)
+        if res.returncode == 0 and res.stdout.strip().isdigit():
+            return int(res.stdout.strip()) / (1024 ** 3)
+    except Exception:
+        pass
+    try:
+        import psutil
+        return psutil.virtual_memory().total / (1024 ** 3)
+    except Exception:
+        pass
+    return 16.0
+
+def get_default_max_concurrency() -> int:
+    ram_gb = get_system_ram_gb()
+    # 64GB Mac Studio can safely handle 2 slots at 48k tokens context.
+    # 16GB M1 Mac must strictly stay at 1.
+    return 2 if ram_gb >= 48.0 else 1
+
+MAX_CONCURRENT_REVIEWS = int(os.getenv("MAX_CONCURRENT_REVIEWS", str(get_default_max_concurrency())))
+
+def get_max_concurrent_reviews() -> int:
+    env_val = os.getenv("MAX_CONCURRENT_REVIEWS")
+    if env_val and env_val.isdigit():
+        return int(env_val)
+    return MAX_CONCURRENT_REVIEWS
+
 # Report Settings
 REPORTS_DIR = os.getenv("REPORTS_DIR", "reports")
 FAILED_PAPERS_FILE = os.getenv("FAILED_PAPERS_FILE", "failed_papers.md")
