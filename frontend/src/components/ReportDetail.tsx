@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import { ArrowLeft, Send, Sparkles, AlertCircle, Bookmark, ExternalLink, Loader, Trash } from 'lucide-react';
+import { ArrowLeft, Send, Sparkles, AlertCircle, Bookmark, ExternalLink, Loader, Trash, Download, FileDown, BookMarked } from 'lucide-react';
 import DiffViewer from './DiffViewer';
 
 interface PaperItem {
@@ -31,6 +31,16 @@ export default function ReportDetail({ reportId, onBack }: ReportDetailProps) {
   const [showDiff, setShowDiff] = useState(false);
   const [diffData, setDiffData] = useState({ current: '', proposed: '', diff: '' });
   const [savingProfile, setSavingProfile] = useState(false);
+
+  // Export & Download states
+  const [exportStatus, setExportStatus] = useState<{
+    has_pdf: boolean;
+    filename_base: string;
+    pdf_url?: string;
+  } | null>(null);
+  const [downloadingCitation, setDownloadingCitation] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [exportingBoth, setExportingBoth] = useState(false);
 
   const API_URL = import.meta.env.DEV ? 'http://localhost:8000' : '';
 
@@ -61,6 +71,14 @@ export default function ReportDetail({ reportId, onBack }: ReportDetailProps) {
       const data = await res.json();
       setPaper(data.paper);
       setMarkdown(data.markdown);
+
+      // Concurrently fetch export/PDF status
+      fetch(`${API_URL}/api/reports/${reportId}/export-status`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((sData) => {
+          if (sData) setExportStatus(sData);
+        })
+        .catch((err) => console.warn("Failed to fetch export status:", err));
     } catch (e) {
       console.error('Error fetching report details:', e);
     } finally {
@@ -71,6 +89,55 @@ export default function ReportDetail({ reportId, onBack }: ReportDetailProps) {
   useEffect(() => {
     fetchReportDetails();
   }, [reportId]);
+
+  const handleDownloadCitation = () => {
+    setDownloadingCitation(true);
+    const link = document.createElement('a');
+    link.href = `${API_URL}/api/reports/${reportId}/citation`;
+    link.setAttribute('download', '');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => setDownloadingCitation(false), 1000);
+  };
+
+  const handleDownloadPdf = () => {
+    if (exportStatus && !exportStatus.has_pdf) return;
+    setDownloadingPdf(true);
+    const link = document.createElement('a');
+    link.href = `${API_URL}/api/reports/${reportId}/pdf`;
+    link.setAttribute('download', '');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => setDownloadingPdf(false), 2000);
+  };
+
+  const handleExportBoth = () => {
+    setExportingBoth(true);
+    // 1. Trigger citation download
+    const citLink = document.createElement('a');
+    citLink.href = `${API_URL}/api/reports/${reportId}/citation`;
+    citLink.setAttribute('download', '');
+    document.body.appendChild(citLink);
+    citLink.click();
+    document.body.removeChild(citLink);
+
+    // 2. Trigger PDF download if available
+    if (exportStatus?.has_pdf !== false) {
+      setTimeout(() => {
+        const pdfLink = document.createElement('a');
+        pdfLink.href = `${API_URL}/api/reports/${reportId}/pdf`;
+        pdfLink.setAttribute('download', '');
+        document.body.appendChild(pdfLink);
+        pdfLink.click();
+        document.body.removeChild(pdfLink);
+        setExportingBoth(false);
+      }, 600);
+    } else {
+      setTimeout(() => setExportingBoth(false), 1000);
+    }
+  };
 
   const handleFeedbackSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -156,14 +223,49 @@ export default function ReportDetail({ reportId, onBack }: ReportDetailProps) {
           Back to Reports
         </button>
         <div className="flex items-center gap-2">
-          <button onClick={handleDeleteReport} className="btn btn-secondary btn-sm btn-danger-hover">
-            <Trash size={12} />
-            Delete Report
+          {/* EndNote / Citation Button */}
+          <button
+            onClick={handleDownloadCitation}
+            disabled={downloadingCitation}
+            className="btn btn-secondary btn-sm"
+            title="Download citation file (.enw) formatted for EndNote"
+          >
+            <BookMarked size={13} />
+            {downloadingCitation ? 'Downloading .enw...' : 'Download .enw'}
           </button>
+
+          {/* PDF Download Button */}
+          <button
+            onClick={handleDownloadPdf}
+            disabled={downloadingPdf || (exportStatus !== null && !exportStatus.has_pdf)}
+            className={`btn btn-secondary btn-sm ${exportStatus && !exportStatus.has_pdf ? 'opacity-50 cursor-not-allowed' : ''}`}
+            title={exportStatus && !exportStatus.has_pdf ? "Direct PDF not available (paywalled or HTML article)" : "Download paper PDF on-demand"}
+          >
+            <FileDown size={13} />
+            {downloadingPdf ? 'Downloading PDF...' : exportStatus && !exportStatus.has_pdf ? 'PDF Unavailable' : 'Download PDF'}
+          </button>
+
+          {/* Export Both Button */}
+          <button
+            onClick={handleExportBoth}
+            disabled={exportingBoth}
+            className="btn btn-primary btn-sm"
+            title="Download both EndNote citation (.enw) and PDF directly into your Downloads folder"
+          >
+            <Download size={13} />
+            {exportingBoth ? 'Exporting...' : 'Export Both'}
+          </button>
+
+          <div style={{ width: '1px', height: '18px', background: 'rgba(255, 255, 255, 0.15)', margin: '0 4px' }} />
+
           <a href={paper.url} target="_blank" rel="noopener noreferrer" className="btn btn-secondary btn-sm">
             Original Source
             <ExternalLink size={12} />
           </a>
+
+          <button onClick={handleDeleteReport} className="btn btn-secondary btn-sm btn-danger-hover" title="Delete Report">
+            <Trash size={12} />
+          </button>
         </div>
       </div>
 

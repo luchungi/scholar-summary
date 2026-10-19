@@ -408,5 +408,12 @@
         "type": "direct"
       }
     ]
+  },
+  "jscdss.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
   }
 }

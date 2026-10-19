@@ -1,5 +1,6 @@
 import os
 import sys
+import io
 import queue
 import difflib
 import subprocess
@@ -9,10 +10,11 @@ from typing import List, Dict, Any, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlmodel import Session, select
+import zipfile
 
 # Root import setup
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -31,6 +33,17 @@ import model_settings
 import paper_retriever
 from agent import update_user_interests
 from main import ensure_interests_file, sanitize_filename
+from backend.citation_service import (
+    resolve_paper_metadata,
+    generate_enw_content,
+    generate_combined_enw,
+    get_academic_filename_base
+)
+from backend.pdf_service import (
+    resolve_pdf_url,
+    stream_pdf,
+    download_pdf_bytes
+)
 
 # Create FastAPI app
 app = FastAPI(title="Scholar Summary Agent Web API")
@@ -114,6 +127,9 @@ class ModelSettingsRequest(BaseModel):
 
 class FrameworkSwitchRequest(BaseModel):
     framework: str
+
+class BulkExportRequest(BaseModel):
+    paper_ids: List[int]
 
 # Endpoints
 @app.get("/api/alerts")
@@ -268,6 +284,148 @@ def get_report(paper_id: int, session: Session = Depends(get_session)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read report: {e}")
+
+@app.get("/api/reports/{paper_id}/export-status")
+def get_paper_export_status(paper_id: int, session: Session = Depends(get_session)):
+    """
+    Returns export metadata and PDF availability for a paper.
+    """
+    paper = session.get(Paper, paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    metadata = resolve_paper_metadata(paper.url, paper.title, paper.report_path)
+    filename_base = get_academic_filename_base(metadata)
+    pdf_url = resolve_pdf_url(paper.url, paper.title)
+
+    return {
+        "paper_id": paper.id,
+        "title": paper.title,
+        "filename_base": filename_base,
+        "has_pdf": pdf_url is not None,
+        "pdf_url": pdf_url,
+        "authors": metadata.get("authors", []),
+        "year": metadata.get("year"),
+        "journal": metadata.get("journal")
+    }
+
+@app.get("/api/reports/{paper_id}/citation")
+def download_paper_citation(paper_id: int, session: Session = Depends(get_session)):
+    """
+    Generates and streams an EndNote .enw citation file for a paper.
+    """
+    paper = session.get(Paper, paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    metadata = resolve_paper_metadata(paper.url, paper.title, paper.report_path)
+    filename_base = get_academic_filename_base(metadata)
+    enw_content = generate_enw_content(metadata)
+    filename = f"{filename_base}.enw"
+
+    return Response(
+        content=enw_content,
+        media_type="application/x-endnote-refer; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
+
+@app.get("/api/reports/{paper_id}/pdf")
+def download_paper_pdf(paper_id: int, session: Session = Depends(get_session)):
+    """
+    Streams the paper PDF live on demand without saving it to disk.
+    """
+    paper = session.get(Paper, paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    metadata = resolve_paper_metadata(paper.url, paper.title, paper.report_path)
+    filename_base = get_academic_filename_base(metadata)
+    pdf_url = resolve_pdf_url(paper.url, paper.title)
+
+    if not pdf_url:
+        raise HTTPException(
+            status_code=404,
+            detail="No downloadable PDF available for this paper (paywalled or HTML only)."
+        )
+
+    filename = f"{filename_base}.pdf"
+    try:
+        return StreamingResponse(
+            stream_pdf(pdf_url),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Access-Control-Expose-Headers": "Content-Disposition"
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to stream PDF from source: {e}")
+
+@app.post("/api/reports/bulk-export")
+def bulk_export_reports(req: BulkExportRequest, session: Session = Depends(get_session)):
+    """
+    Bundles selected papers into a single ZIP archive containing individual PDFs,
+    individual .enw files, and a master citations_all.enw file for one-click EndNote import.
+    """
+    if not req.paper_ids:
+        raise HTTPException(status_code=400, detail="No papers selected for export")
+
+    papers = session.exec(select(Paper).where(Paper.id.in_(req.paper_ids))).all()
+    if not papers:
+        raise HTTPException(status_code=404, detail="None of the selected papers were found")
+
+    zip_buffer = io.BytesIO()
+    all_metadata = []
+    summary_lines = [
+        "Scholar Summary EndNote Export",
+        f"Exported At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Total Selected Papers: {len(papers)}",
+        "=" * 60,
+        ""
+    ]
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for p in papers:
+            meta = resolve_paper_metadata(p.url, p.title, p.report_path)
+            all_metadata.append(meta)
+            base_name = get_academic_filename_base(meta)
+
+            # Individual .enw
+            individual_enw = generate_enw_content(meta)
+            zip_file.writestr(f"{base_name}.enw", individual_enw.encode("utf-8"))
+
+            # PDF
+            pdf_url = resolve_pdf_url(p.url, p.title)
+            pdf_bytes = download_pdf_bytes(pdf_url) if pdf_url else None
+            if pdf_bytes:
+                zip_file.writestr(f"{base_name}.pdf", pdf_bytes)
+                summary_lines.append(f"[OK] PDF & Citation: {p.title} -> {base_name}")
+            else:
+                summary_lines.append(f"[CITATION ONLY] PDF unavailable (paywalled/HTML): {p.title}")
+
+        # Master combined .enw file
+        combined_enw = generate_combined_enw(all_metadata)
+        zip_file.writestr("citations_all.enw", combined_enw.encode("utf-8"))
+
+        summary_lines.append("")
+        summary_lines.append("Tip: Double-click 'citations_all.enw' to import all references into EndNote in a single step.")
+        zip_file.writestr("export_summary.txt", "\n".join(summary_lines).encode("utf-8"))
+
+    zip_buffer.seek(0)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_filename = f"EndNote_Export_{timestamp}.zip"
+
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{zip_filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
+    )
 
 @app.post("/api/reports/{paper_id}/feedback")
 def evaluate_feedback(paper_id: int, req: FeedbackRequest, session: Session = Depends(get_session)):

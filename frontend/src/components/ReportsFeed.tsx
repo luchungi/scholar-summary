@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Calendar, Link as LinkIcon, BookOpen, ChevronRight, Loader, Trash } from 'lucide-react';
+import { Search, Calendar, Link as LinkIcon, BookOpen, ChevronRight, Loader, Trash, Download, X } from 'lucide-react';
 
 interface PaperReport {
   id: number;
@@ -28,6 +28,10 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState<'quality' | 'relevance'>('quality');
   const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
+
+  // Multi-selection & bulk export states
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [exportingZip, setExportingZip] = useState(false);
 
   const API_URL = import.meta.env.DEV ? 'http://localhost:8000' : '';
 
@@ -79,6 +83,70 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
     const urlMatch = report.url.toLowerCase().includes(searchQuery.toLowerCase());
     return titleMatch || urlMatch;
   });
+
+  const toggleSelectPaper = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectGroup = (papers: PaperReport[]) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const allGroupSelected = papers.length > 0 && papers.every((p) => next.has(p.id));
+      if (allGroupSelected) {
+        papers.forEach((p) => next.delete(p.id));
+      } else {
+        papers.forEach((p) => next.add(p.id));
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAllFiltered = () => {
+    setSelectedIds((prev) => {
+      const allSelected = filteredReports.length > 0 && filteredReports.every((p) => prev.has(p.id));
+      if (allSelected) return new Set();
+      return new Set(filteredReports.map((p) => p.id));
+    });
+  };
+
+  const handleBulkExport = async () => {
+    if (selectedIds.size === 0) return;
+    setExportingZip(true);
+    try {
+      const res = await fetch(`${API_URL}/api/reports/bulk-export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paper_ids: Array.from(selectedIds) })
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const disposition = res.headers.get('Content-Disposition');
+      let filename = `EndNote_Export_${new Date().toISOString().slice(0, 10)}.zip`;
+      if (disposition && disposition.includes('filename=')) {
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) filename = match[1];
+      }
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert(`Failed to export reports: ${err.message || err}`);
+    } finally {
+      setExportingZip(false);
+    }
+  };
 
   // Group filtered reports by date (YYYY-MM-DD)
   const groups: { [key: string]: { label: string; date: Date; papers: PaperReport[] } } = {};
@@ -132,6 +200,43 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
         </div>
       </div>
 
+      {selectedIds.size > 0 && (
+        <div className="bulk-export-bar glass-panel fade-in">
+          <div className="bulk-bar-info">
+            <span className="selected-count-badge">{selectedIds.size}</span>
+            <span>{selectedIds.size === 1 ? 'paper' : 'papers'} selected for EndNote</span>
+          </div>
+          <div className="bulk-bar-actions">
+            <button
+              onClick={handleBulkExport}
+              disabled={exportingZip}
+              className="btn btn-primary btn-sm"
+              title="Download single ZIP archive with combined citations_all.enw and all PDFs"
+            >
+              {exportingZip ? (
+                <>
+                  <Loader className="animate-spin" size={13} />
+                  Packaging ZIP...
+                </>
+              ) : (
+                <>
+                  <Download size={13} />
+                  Export Selected to EndNote (ZIP)
+                </>
+              )}
+            </button>
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="btn btn-secondary btn-sm"
+              title="Clear all selections"
+            >
+              <X size={13} />
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="reports-list-container scroller">
         {loading ? (
           <div className="feed-loading">
@@ -160,6 +265,15 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
                     <table className="reports-table">
                       <thead>
                         <tr>
+                          <th className="th-select">
+                            <input
+                              type="checkbox"
+                              checked={group.papers.length > 0 && group.papers.every((p) => selectedIds.has(p.id))}
+                              onChange={() => toggleSelectGroup(group.papers)}
+                              title="Select / deselect all in this section"
+                              className="checkbox-input"
+                            />
+                          </th>
                           <th className="th-title">Title of the Paper</th>
                           <th 
                             className={`th-rating sortable ${sortBy === 'quality' ? 'active' : ''}`}
@@ -189,7 +303,16 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
                       </thead>
                       <tbody>
                         {group.papers.map((paper) => (
-                          <tr key={paper.id} className="table-row">
+                          <tr key={paper.id} className={`table-row ${selectedIds.has(paper.id) ? 'row-selected' : ''}`}>
+                            <td className="td-select">
+                              <input
+                                type="checkbox"
+                                checked={selectedIds.has(paper.id)}
+                                onChange={() => toggleSelectPaper(paper.id)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="checkbox-input"
+                              />
+                            </td>
                             <td className="td-title">
                               <button 
                                 className="paper-title-link"
@@ -431,8 +554,56 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
           align-items: center;
           gap: 4px;
         }
+        .bulk-export-bar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 12px 20px;
+          margin-bottom: 20px;
+          border-radius: 12px;
+          background: rgba(124, 58, 237, 0.15);
+          border: 1px solid rgba(124, 58, 237, 0.35);
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        }
+        .bulk-bar-info {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          font-weight: 500;
+          font-size: 14px;
+          color: #fff;
+        }
+        .selected-count-badge {
+          background: #8b5cf6;
+          color: #fff;
+          padding: 2px 9px;
+          border-radius: 12px;
+          font-size: 12px;
+          font-weight: 700;
+        }
+        .bulk-bar-actions {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .th-select, .td-select {
+          width: 40px;
+          text-align: center;
+          padding-left: 14px !important;
+          padding-right: 6px !important;
+        }
+        .checkbox-input {
+          width: 16px;
+          height: 16px;
+          accent-color: #8b5cf6;
+          cursor: pointer;
+          border-radius: 4px;
+        }
+        .row-selected {
+          background-color: rgba(124, 58, 237, 0.09) !important;
+        }
         .th-title {
-          width: 50%;
+          width: 46%;
         }
         .th-rating {
           width: 18%;
