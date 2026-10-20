@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Calendar, Link as LinkIcon, BookOpen, ChevronRight, Loader, Trash, Download, X } from 'lucide-react';
+import { Search, Calendar, Link as LinkIcon, BookOpen, ChevronRight, Loader, Trash, Download, X, AlertTriangle, CheckCircle2, FolderOpen } from 'lucide-react';
 
 interface PaperReport {
   id: number;
@@ -9,6 +9,26 @@ interface PaperReport {
   report_path: string;
   quality_rating?: number;
   relevance_rating?: number;
+}
+
+interface PreflightPaper {
+  id: number;
+  title: string;
+  has_pdf: boolean;
+  filename_base: string;
+}
+
+interface PreflightData {
+  total: number;
+  ready_count: number;
+  missing_count: number;
+  all_have_pdf: boolean;
+  papers: PreflightPaper[];
+}
+
+interface ExportToast {
+  message: string;
+  batchDir: string;
 }
 
 const getRatingClass = (rating?: number): string => {
@@ -32,6 +52,10 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
   // Multi-selection & bulk export states
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [exportingZip, setExportingZip] = useState(false);
+  const [exportingDirect, setExportingDirect] = useState(false);
+  const [preflightModalOpen, setPreflightModalOpen] = useState(false);
+  const [preflightData, setPreflightData] = useState<PreflightData | null>(null);
+  const [exportToast, setExportToast] = useState<ExportToast | null>(null);
 
   const API_URL = import.meta.env.DEV ? 'http://localhost:8000' : '';
 
@@ -112,6 +136,77 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
       if (allSelected) return new Set();
       return new Set(filteredReports.map((p) => p.id));
     });
+  };
+
+  const handleInitiateEndNoteExport = async () => {
+    if (selectedIds.size === 0) return;
+    setExportingDirect(true);
+    try {
+      const res = await fetch(`${API_URL}/api/reports/export-preflight`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paper_ids: Array.from(selectedIds) })
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      const data: PreflightData = await res.json();
+      if (data.all_have_pdf) {
+        // Fast-path: 100% of papers have PDFs, export directly with 0 friction
+        await handleExecuteEndNoteExport(false);
+      } else {
+        // Missing PDFs: prompt user with confirmation modal
+        setPreflightData(data);
+        setPreflightModalOpen(true);
+        setExportingDirect(false);
+      }
+    } catch (err: any) {
+      alert(`Pre-flight check failed: ${err.message || err}`);
+      setExportingDirect(false);
+    }
+  };
+
+  const handleExecuteEndNoteExport = async (skipPaywalled: boolean) => {
+    setExportingDirect(true);
+    setPreflightModalOpen(false);
+    try {
+      const res = await fetch(`${API_URL}/api/reports/endnote-export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paper_ids: Array.from(selectedIds),
+          skip_paywalled: skipPaywalled
+        })
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      const data = await res.json();
+      setSelectedIds(new Set());
+      setExportToast({
+        message: `Exported ${data.total_exported} paper${data.total_exported === 1 ? '' : 's'} to EndNote 21 (${data.with_pdf_count} with PDF attached${data.citation_only_count > 0 ? `, ${data.citation_only_count} citation-only` : ''})!`,
+        batchDir: data.batch_dir
+      });
+    } catch (err: any) {
+      alert(`EndNote export failed: ${err.message || err}`);
+    } finally {
+      setExportingDirect(false);
+    }
+  };
+
+  const handleRevealInFinder = async (path: string) => {
+    try {
+      const res = await fetch(`${API_URL}/api/reports/reveal-in-finder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path })
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+    } catch (err: any) {
+      alert(`Could not open Finder: ${err.message || err}`);
+    }
   };
 
   const handleBulkExport = async () => {
@@ -208,10 +303,28 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
           </div>
           <div className="bulk-bar-actions">
             <button
+              onClick={handleInitiateEndNoteExport}
+              disabled={exportingDirect || exportingZip}
+              className="btn btn-primary btn-sm flex items-center gap-1.5"
+              title="Directly export and launch EndNote 21 with all papers and PDFs attached"
+            >
+              {exportingDirect ? (
+                <>
+                  <Loader className="animate-spin" size={13} />
+                  Exporting to EndNote...
+                </>
+              ) : (
+                <>
+                  <BookOpen size={13} />
+                  Export to EndNote (1-Click)
+                </>
+              )}
+            </button>
+            <button
               onClick={handleBulkExport}
-              disabled={exportingZip}
-              className="btn btn-primary btn-sm"
-              title="Download single ZIP archive with combined citations_all.enw and all PDFs"
+              disabled={exportingZip || exportingDirect}
+              className="btn btn-secondary btn-sm flex items-center gap-1.5"
+              title="Download portable ZIP archive with combined citations_all.enw and all PDFs"
             >
               {exportingZip ? (
                 <>
@@ -221,7 +334,7 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
               ) : (
                 <>
                   <Download size={13} />
-                  Export Selected to EndNote (ZIP)
+                  Download ZIP
                 </>
               )}
             </button>
@@ -232,6 +345,92 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
             >
               <X size={13} />
               Clear
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Preflight Missing PDFs Modal */}
+      {preflightModalOpen && preflightData && (
+        <div className="modal-backdrop fade-in" onClick={() => setPreflightModalOpen(false)}>
+          <div className="modal-content glass-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title-row">
+                <AlertTriangle className="text-amber-400" size={20} />
+                <h3>Missing PDFs Detected</h3>
+              </div>
+              <button className="modal-close-btn" onClick={() => setPreflightModalOpen(false)}>
+                <X size={16} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="modal-desc">
+                <strong>{preflightData.ready_count}</strong> of <strong>{preflightData.total}</strong> selected papers have downloadable PDFs ready.
+                The following <strong>{preflightData.missing_count}</strong> paper{preflightData.missing_count > 1 ? 's' : ''} {preflightData.missing_count > 1 ? 'do' : 'does'} not have an open-access PDF (paywalled or HTML-only):
+              </p>
+              <div className="missing-papers-list scroller">
+                {preflightData.papers.filter(p => !p.has_pdf).map(p => (
+                  <div key={p.id} className="missing-paper-item">
+                    <span className="missing-badge">No PDF</span>
+                    <span className="missing-title">{p.title}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="modal-hint">
+                EndNote requires local PDF files to bind attachments. How would you like to proceed?
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => setPreflightModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => handleExecuteEndNoteExport(false)}
+                title="Import all selected papers into EndNote, attaching PDFs where available and importing citation-only for the rest"
+              >
+                Export All ({preflightData.missing_count} Citation-Only)
+              </button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => handleExecuteEndNoteExport(true)}
+                title="Only export papers that have direct PDF attachments"
+              >
+                Export Only {preflightData.ready_count} with PDFs
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Export Toast Notification */}
+      {exportToast && (
+        <div className="export-toast glass-panel fade-in">
+          <div className="toast-content">
+            <CheckCircle2 className="text-emerald-400 shrink-0" size={18} />
+            <div className="toast-text">
+              <div className="toast-msg">{exportToast.message}</div>
+              <div className="toast-sub">EndNote 21 has opened to import your references.</div>
+            </div>
+          </div>
+          <div className="toast-actions">
+            <button
+              className="btn btn-secondary btn-xs flex items-center gap-1"
+              onClick={() => handleRevealInFinder(exportToast.batchDir)}
+              title="Open folder in macOS Finder"
+            >
+              <FolderOpen size={12} />
+              Reveal in Finder
+            </button>
+            <button
+              className="toast-close-btn"
+              onClick={() => setExportToast(null)}
+              title="Dismiss"
+            >
+              <X size={14} />
             </button>
           </div>
         </div>
@@ -705,6 +904,174 @@ export default function ReportsFeed({ onSelectReport }: ReportsFeedProps) {
         .sort-arrow {
           font-size: 9px;
           opacity: 0.8;
+        }
+
+        /* Preflight Modal & Export Toast */
+        .modal-backdrop {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0, 0, 0, 0.75);
+          backdrop-filter: blur(4px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 1000;
+          padding: 20px;
+        }
+        .modal-content {
+          width: 100%;
+          max-width: 540px;
+          border-radius: 14px;
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          background: #18181b;
+          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+        }
+        .modal-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 16px 20px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .modal-title-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .modal-title-row h3 {
+          margin: 0;
+          font-size: 16px;
+          font-weight: 600;
+          color: #fff;
+        }
+        .modal-close-btn {
+          background: none;
+          border: none;
+          color: rgba(255, 255, 255, 0.5);
+          cursor: pointer;
+          padding: 4px;
+          border-radius: 4px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .modal-close-btn:hover {
+          color: #fff;
+          background: rgba(255, 255, 255, 0.1);
+        }
+        .modal-body {
+          padding: 18px 20px;
+          font-size: 13.5px;
+          line-height: 1.5;
+          color: rgba(255, 255, 255, 0.85);
+        }
+        .modal-desc {
+          margin: 0 0 12px 0;
+        }
+        .missing-papers-list {
+          max-height: 180px;
+          overflow-y: auto;
+          background: rgba(0, 0, 0, 0.35);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 8px;
+          padding: 8px 12px;
+          margin-bottom: 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .missing-paper-item {
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
+          font-size: 12.5px;
+        }
+        .missing-badge {
+          background: rgba(239, 68, 68, 0.15);
+          color: #f87171;
+          border: 1px solid rgba(239, 68, 68, 0.3);
+          border-radius: 4px;
+          padding: 1px 6px;
+          font-size: 10px;
+          font-weight: 600;
+          white-space: nowrap;
+          margin-top: 1px;
+        }
+        .missing-title {
+          color: rgba(255, 255, 255, 0.9);
+          word-break: break-word;
+        }
+        .modal-hint {
+          margin: 0;
+          font-size: 12.5px;
+          color: rgba(255, 255, 255, 0.6);
+        }
+        .modal-footer {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 10px;
+          padding: 14px 20px;
+          border-top: 1px solid rgba(255, 255, 255, 0.1);
+          background: rgba(0, 0, 0, 0.2);
+        }
+        .export-toast {
+          position: fixed;
+          bottom: 24px;
+          right: 24px;
+          z-index: 1050;
+          background: #18181b;
+          border: 1px solid rgba(52, 211, 153, 0.3);
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+          border-radius: 12px;
+          padding: 14px 18px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          max-width: 480px;
+        }
+        .toast-content {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+        .toast-text {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .toast-msg {
+          font-size: 13px;
+          font-weight: 600;
+          color: #fff;
+        }
+        .toast-sub {
+          font-size: 11.5px;
+          color: rgba(255, 255, 255, 0.6);
+        }
+        .toast-actions {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .toast-close-btn {
+          background: none;
+          border: none;
+          color: rgba(255, 255, 255, 0.4);
+          cursor: pointer;
+          padding: 2px;
+          display: flex;
+          align-items: center;
+        }
+        .toast-close-btn:hover {
+          color: #fff;
         }
       `}</style>
     </div>

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import { ArrowLeft, Send, Sparkles, AlertCircle, Bookmark, ExternalLink, Loader, Trash, Download, FileDown, BookMarked } from 'lucide-react';
+import { ArrowLeft, Send, Sparkles, AlertCircle, Bookmark, ExternalLink, Loader, Trash, Download, FileDown, BookMarked, BookOpen, FolderOpen, CheckCircle2, X } from 'lucide-react';
 import DiffViewer from './DiffViewer';
 
 interface PaperItem {
@@ -40,7 +40,8 @@ export default function ReportDetail({ reportId, onBack }: ReportDetailProps) {
   } | null>(null);
   const [downloadingCitation, setDownloadingCitation] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
-  const [exportingBoth, setExportingBoth] = useState(false);
+  const [exportingEndNote, setExportingEndNote] = useState(false);
+  const [exportToast, setExportToast] = useState<{ message: string; batchDir: string } | null>(null);
 
   const API_URL = import.meta.env.DEV ? 'http://localhost:8000' : '';
 
@@ -113,29 +114,55 @@ export default function ReportDetail({ reportId, onBack }: ReportDetailProps) {
     setTimeout(() => setDownloadingPdf(false), 2000);
   };
 
-  const handleExportBoth = () => {
-    setExportingBoth(true);
-    // 1. Trigger citation download
-    const citLink = document.createElement('a');
-    citLink.href = `${API_URL}/api/reports/${reportId}/citation`;
-    citLink.setAttribute('download', '');
-    document.body.appendChild(citLink);
-    citLink.click();
-    document.body.removeChild(citLink);
+  const handleEndNoteExport = async () => {
+    if (!paper) return;
 
-    // 2. Trigger PDF download if available
-    if (exportStatus?.has_pdf !== false) {
-      setTimeout(() => {
-        const pdfLink = document.createElement('a');
-        pdfLink.href = `${API_URL}/api/reports/${reportId}/pdf`;
-        pdfLink.setAttribute('download', '');
-        document.body.appendChild(pdfLink);
-        pdfLink.click();
-        document.body.removeChild(pdfLink);
-        setExportingBoth(false);
-      }, 600);
-    } else {
-      setTimeout(() => setExportingBoth(false), 1000);
+    if (exportStatus && !exportStatus.has_pdf) {
+      const proceed = confirm(
+        "Direct PDF is unavailable for this paper (paywalled or HTML-only article).\n\nDo you want to import the citation metadata into EndNote without an attached PDF?"
+      );
+      if (!proceed) return;
+    }
+
+    setExportingEndNote(true);
+    try {
+      const res = await fetch(`${API_URL}/api/reports/endnote-export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paper_ids: [paper.id],
+          skip_paywalled: false
+        })
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      const data = await res.json();
+      setExportToast({
+        message: data.with_pdf_count > 0
+          ? 'Imported paper into EndNote 21 with PDF attached!'
+          : 'Imported paper citation into EndNote 21 (citation-only)',
+        batchDir: data.batch_dir
+      });
+    } catch (err: any) {
+      alert(`EndNote export failed: ${err.message || err}`);
+    } finally {
+      setExportingEndNote(false);
+    }
+  };
+
+  const handleRevealInFinder = async (path: string) => {
+    try {
+      const res = await fetch(`${API_URL}/api/reports/reveal-in-finder`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path })
+      });
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+    } catch (err: any) {
+      alert(`Could not open Finder: ${err.message || err}`);
     }
   };
 
@@ -245,15 +272,24 @@ export default function ReportDetail({ reportId, onBack }: ReportDetailProps) {
             {downloadingPdf ? 'Downloading PDF...' : exportStatus && !exportStatus.has_pdf ? 'PDF Unavailable' : 'Download PDF'}
           </button>
 
-          {/* Export Both Button */}
+          {/* 1-Click Export to EndNote Button */}
           <button
-            onClick={handleExportBoth}
-            disabled={exportingBoth}
-            className="btn btn-primary btn-sm"
-            title="Download both EndNote citation (.enw) and PDF directly into your Downloads folder"
+            onClick={handleEndNoteExport}
+            disabled={exportingEndNote}
+            className="btn btn-primary btn-sm flex items-center gap-1.5"
+            title="Import paper directly into EndNote with attached PDF (1-click)"
           >
-            <Download size={13} />
-            {exportingBoth ? 'Exporting...' : 'Export Both'}
+            {exportingEndNote ? (
+              <>
+                <Loader className="animate-spin" size={13} />
+                Exporting...
+              </>
+            ) : (
+              <>
+                <BookOpen size={13} />
+                Export to EndNote
+              </>
+            )}
           </button>
 
           <div style={{ width: '1px', height: '18px', background: 'rgba(255, 255, 255, 0.15)', margin: '0 4px' }} />
@@ -348,6 +384,36 @@ export default function ReportDetail({ reportId, onBack }: ReportDetailProps) {
           onCancel={() => setShowDiff(false)}
           saving={savingProfile}
         />
+      )}
+
+      {/* Export Toast Notification */}
+      {exportToast && (
+        <div className="export-toast glass-panel fade-in">
+          <div className="toast-content">
+            <CheckCircle2 className="text-emerald-400 shrink-0" size={18} />
+            <div className="toast-text">
+              <div className="toast-msg">{exportToast.message}</div>
+              <div className="toast-sub">EndNote 21 has opened to import this reference.</div>
+            </div>
+          </div>
+          <div className="toast-actions">
+            <button
+              className="btn btn-secondary btn-xs flex items-center gap-1"
+              onClick={() => handleRevealInFinder(exportToast.batchDir)}
+              title="Open folder in macOS Finder"
+            >
+              <FolderOpen size={12} />
+              Reveal in Finder
+            </button>
+            <button
+              className="toast-close-btn"
+              onClick={() => setExportToast(null)}
+              title="Dismiss"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
       )}
 
       <style>{`
@@ -608,6 +674,64 @@ export default function ReportDetail({ reportId, onBack }: ReportDetailProps) {
           resize: none;
           font-size: 13px;
           line-height: 1.5;
+        }
+
+        /* Export Toast */
+        .export-toast {
+          position: fixed;
+          bottom: 24px;
+          right: 24px;
+          z-index: 1050;
+          background: #18181b;
+          border: 1px solid rgba(52, 211, 153, 0.3);
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+          border-radius: 12px;
+          padding: 14px 18px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          max-width: 480px;
+        }
+        .toast-content {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+        .toast-text {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .toast-msg {
+          font-size: 13px;
+          font-weight: 600;
+          color: #fff;
+        }
+        .toast-sub {
+          font-size: 11.5px;
+          color: rgba(255, 255, 255, 0.6);
+        }
+        .toast-actions {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .toast-close-btn {
+          background: none;
+          border: none;
+          color: rgba(255, 255, 255, 0.4);
+          cursor: pointer;
+          padding: 2px;
+          display: flex;
+          align-items: center;
+        }
+        .toast-close-btn:hover {
+          color: #fff;
+        }
+        .btn-xs {
+          font-size: 11px;
+          padding: 4px 8px;
         }
       `}</style>
     </div>

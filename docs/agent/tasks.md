@@ -5,6 +5,7 @@
 ## Next
 
 ## Done (most recent first)
+- [x] T-012 Implement 1-Click EndNote Batch Export with attached PDFs, local staging directory, pre-flight paywall check, and direct macOS integration (2026-10-20, see decision 0008)
 - [x] T-011 Automate EndNote citation (.enw) and PDF downloads with multi-source metadata resolution, on-demand streaming, and bulk ZIP export (2026-10-19)
 - [x] T-010 Implement batch paper reviews with hardware-aware concurrency, two-phase pipeline, and staggered prefill (2026-10-18, see decision 0006)
 - [x] T-009 Add oMLX framework support alongside LM Studio with model unloading, server stopping, and auto-start on framework switch (2026-10-16, see decision 0005)

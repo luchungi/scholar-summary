@@ -388,9 +388,11 @@ def resolve_paper_metadata(url: str, title: str, report_path: Optional[str] = No
 
     return metadata
 
-def generate_enw_content(metadata: Dict[str, Any]) -> str:
+def generate_enw_content(metadata: Dict[str, Any], pdf_local_path: Optional[str] = None) -> str:
     """
     Serializes metadata dictionary into standard EndNote Refer (.enw) format.
+    If pdf_local_path is provided (or present in metadata["pdf_local_path"]),
+    includes the %< and %> tags so EndNote automatically attaches the PDF.
     """
     lines = []
     
@@ -436,6 +438,12 @@ def generate_enw_content(metadata: Dict[str, Any]) -> str:
     if metadata.get("url"):
         lines.append(f"%U {metadata['url']}")
 
+    # %< File Attachment (PDF) and %> Link to PDF
+    target_pdf = pdf_local_path or metadata.get("pdf_local_path")
+    if target_pdf:
+        lines.append(f"%< {target_pdf}")
+        lines.append(f"%> {target_pdf}")
+
     # %X Abstract
     if metadata.get("abstract"):
         clean_abstract = " ".join(metadata['abstract'].split())
@@ -447,4 +455,4 @@ def generate_combined_enw(metadata_list: List[Dict[str, Any]]) -> str:
     """
     Generates a combined .enw file with multiple references for bulk import.
     """
-    return "".join(generate_enw_content(m) for m in metadata_list)
+    return "".join(generate_enw_content(m, m.get("pdf_local_path")) for m in metadata_list)

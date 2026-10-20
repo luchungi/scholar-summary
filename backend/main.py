@@ -131,6 +131,16 @@ class FrameworkSwitchRequest(BaseModel):
 class BulkExportRequest(BaseModel):
     paper_ids: List[int]
 
+class ExportPreflightRequest(BaseModel):
+    paper_ids: List[int]
+
+class EndNoteExportRequest(BaseModel):
+    paper_ids: List[int]
+    skip_paywalled: bool = False
+
+class RevealInFinderRequest(BaseModel):
+    path: str
+
 # Endpoints
 @app.get("/api/alerts")
 def fetch_alerts():
@@ -390,21 +400,24 @@ def bulk_export_reports(req: BulkExportRequest, session: Session = Depends(get_s
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         for p in papers:
             meta = resolve_paper_metadata(p.url, p.title, p.report_path)
-            all_metadata.append(meta)
             base_name = get_academic_filename_base(meta)
-
-            # Individual .enw
-            individual_enw = generate_enw_content(meta)
-            zip_file.writestr(f"{base_name}.enw", individual_enw.encode("utf-8"))
 
             # PDF
             pdf_url = resolve_pdf_url(p.url, p.title)
             pdf_bytes = download_pdf_bytes(pdf_url) if pdf_url else None
+            pdf_local_rel_name = None
             if pdf_bytes:
                 zip_file.writestr(f"{base_name}.pdf", pdf_bytes)
+                pdf_local_rel_name = f"{base_name}.pdf"
+                meta["pdf_local_path"] = pdf_local_rel_name
                 summary_lines.append(f"[OK] PDF & Citation: {p.title} -> {base_name}")
             else:
                 summary_lines.append(f"[CITATION ONLY] PDF unavailable (paywalled/HTML): {p.title}")
+
+            # Individual .enw (including %< link to the companion PDF in the zip)
+            individual_enw = generate_enw_content(meta, pdf_local_rel_name)
+            zip_file.writestr(f"{base_name}.enw", individual_enw.encode("utf-8"))
+            all_metadata.append(meta)
 
         # Master combined .enw file
         combined_enw = generate_combined_enw(all_metadata)
@@ -426,6 +439,183 @@ def bulk_export_reports(req: BulkExportRequest, session: Session = Depends(get_s
             "Access-Control-Expose-Headers": "Content-Disposition"
         }
     )
+
+@app.post("/api/reports/export-preflight")
+def export_preflight(req: ExportPreflightRequest, session: Session = Depends(get_session)):
+    """
+    Checks PDF availability for a list of papers before initiating export.
+    """
+    if not req.paper_ids:
+        raise HTTPException(status_code=400, detail="No paper IDs provided")
+
+    papers = session.exec(select(Paper).where(Paper.id.in_(req.paper_ids))).all()
+    if not papers:
+        raise HTTPException(status_code=404, detail="None of the selected papers were found")
+
+    items = []
+    ready_count = 0
+    missing_count = 0
+
+    for p in papers:
+        pdf_url = resolve_pdf_url(p.url, p.title)
+        has_pdf = pdf_url is not None
+        if has_pdf:
+            ready_count += 1
+        else:
+            missing_count += 1
+
+        meta = resolve_paper_metadata(p.url, p.title, p.report_path)
+        items.append({
+            "id": p.id,
+            "title": p.title,
+            "has_pdf": has_pdf,
+            "filename_base": get_academic_filename_base(meta)
+        })
+
+    return {
+        "total": len(items),
+        "ready_count": ready_count,
+        "missing_count": missing_count,
+        "all_have_pdf": missing_count == 0,
+        "papers": items
+    }
+
+@app.post("/api/reports/endnote-export")
+def endnote_export(req: EndNoteExportRequest, session: Session = Depends(get_session)):
+    """
+    Direct One-Click EndNote Export:
+    1. Downloads PDFs into a dedicated timestamped folder: ~/Downloads/EndNote_Imports/Batch_YYYYMMDD_HHMMSS/
+    2. Writes individual .enw files with %< PDF attachments
+    3. Writes consolidated citations_all.enw with %< PDF attachments
+    4. Automatically launches EndNote 21 to import citations_all.enw
+    """
+    if not req.paper_ids:
+        raise HTTPException(status_code=400, detail="No papers selected for export")
+
+    papers = session.exec(select(Paper).where(Paper.id.in_(req.paper_ids))).all()
+    if not papers:
+        raise HTTPException(status_code=404, detail="None of the selected papers were found")
+
+    # If skip_paywalled is True, filter out papers without a downloadable PDF
+    filtered_papers = []
+    for p in papers:
+        pdf_url = resolve_pdf_url(p.url, p.title)
+        if not pdf_url and req.skip_paywalled:
+            continue
+        filtered_papers.append((p, pdf_url))
+
+    if not filtered_papers:
+        raise HTTPException(status_code=400, detail="No eligible papers to export after filtering paywalled articles")
+
+    # Prepare timestamped export directory
+    now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    folder_prefix = "Single" if len(filtered_papers) == 1 else "Batch"
+    batch_dir_name = f"{folder_prefix}_{now_str}"
+    export_dir = Path.home() / "Downloads" / "EndNote_Imports" / batch_dir_name
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    all_metadata = []
+    summary_lines = [
+        "Scholar Summary - EndNote 1-Click Export",
+        f"Exported At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Batch Directory: {export_dir}",
+        f"Total Papers Processed: {len(filtered_papers)}",
+        "=" * 60,
+        ""
+    ]
+
+    with_pdf_count = 0
+    citation_only_count = 0
+
+    for p, pdf_url in filtered_papers:
+        meta = resolve_paper_metadata(p.url, p.title, p.report_path)
+        base_name = get_academic_filename_base(meta)
+
+        pdf_local_path = None
+        if pdf_url:
+            pdf_bytes = download_pdf_bytes(pdf_url)
+            if pdf_bytes:
+                pdf_target_file = export_dir / f"{base_name}.pdf"
+                pdf_target_file.write_bytes(pdf_bytes)
+                pdf_local_path = str(pdf_target_file.resolve())
+                meta["pdf_local_path"] = pdf_local_path
+                with_pdf_count += 1
+                summary_lines.append(f"[OK + PDF] {p.title} -> {base_name}.pdf")
+            else:
+                citation_only_count += 1
+                summary_lines.append(f"[CITATION ONLY] PDF download failed: {p.title}")
+        else:
+            citation_only_count += 1
+            summary_lines.append(f"[CITATION ONLY] Paywalled/HTML only: {p.title}")
+
+        # Individual .enw
+        individual_enw = generate_enw_content(meta, pdf_local_path=pdf_local_path)
+        (export_dir / f"{base_name}.enw").write_text(individual_enw, encoding="utf-8")
+        all_metadata.append(meta)
+
+    # Master combined .enw file
+    combined_enw = generate_combined_enw(all_metadata)
+    enw_file = export_dir / "citations_all.enw"
+    enw_file.write_text(combined_enw, encoding="utf-8")
+
+    summary_lines.append("")
+    summary_lines.append("=" * 60)
+    summary_lines.append(f"Summary: {with_pdf_count} with PDFs attached, {citation_only_count} citation-only.")
+    (export_dir / "export_summary.txt").write_text("\n".join(summary_lines), encoding="utf-8")
+
+    # Launch EndNote to import the consolidated .enw
+    endnote_opened = False
+    try:
+        # Check standard installation locations for EndNote 21 or Launch EndNote
+        candidate_apps = [
+            "/Applications/EndNote 21/EndNote 21.app",
+            "/Applications/Launch EndNote.app"
+        ]
+        chosen_app = next((app for app in candidate_apps if os.path.exists(app)), None)
+
+        if chosen_app:
+            subprocess.Popen(["open", "-a", chosen_app, str(enw_file.resolve())])
+            endnote_opened = True
+        else:
+            # Fall back to default macOS handler for .enw
+            subprocess.Popen(["open", str(enw_file.resolve())])
+            endnote_opened = True
+    except Exception as e:
+        print(f"[-] Could not auto-launch EndNote: {e}")
+
+    return {
+        "status": "success",
+        "batch_dir": str(export_dir.resolve()),
+        "enw_path": str(enw_file.resolve()),
+        "total_exported": len(all_metadata),
+        "with_pdf_count": with_pdf_count,
+        "citation_only_count": citation_only_count,
+        "endnote_opened": endnote_opened
+    }
+
+@app.post("/api/reports/reveal-in-finder")
+def reveal_in_finder(req: RevealInFinderRequest):
+    """
+    Opens macOS Finder to reveal the specified file or folder.
+    """
+    target = Path(req.path).resolve()
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File or folder does not exist")
+
+    # Security check: ensure path is inside user's home or workspace
+    home_path = Path.home().resolve()
+    workspace_path = Path(".").resolve()
+    if not (str(target).startswith(str(home_path)) or str(target).startswith(str(workspace_path))):
+        raise HTTPException(status_code=403, detail="Path outside allowed boundaries")
+
+    try:
+        if target.is_dir():
+            subprocess.Popen(["open", str(target)])
+        else:
+            subprocess.Popen(["open", "-R", str(target)])
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to open in Finder: {e}")
 
 @app.post("/api/reports/{paper_id}/feedback")
 def evaluate_feedback(paper_id: int, req: FeedbackRequest, session: Session = Depends(get_session)):
