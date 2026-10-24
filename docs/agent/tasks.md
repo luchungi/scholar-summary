@@ -3,8 +3,17 @@
 ## In progress
 
 ## Next
+- [ ] T-015 Manual check in EndNote 21: import one batch and confirm %> alone still binds the
+      PDF, the reference type reads Journal Article, and Research Notes is empty (see 0010)
 
 ## Done (most recent first)
+- [x] T-013 Fix EndNote export: metadata-derived validated reference types with
+      url/reference_rules.json, arXiv journal string with the version from the Atom <id>,
+      Crossref chaining for published preprints, dropped %X and %<, split %J/%B
+      (2026-10-24, see decisions 0009 and 0010)
+- [x] T-014 Add pytest as a dev dependency and tests/test_citation_service.py: 32 tests over
+      the type resolver, the valid-EndNote-type invariant and golden .enw output
+      (2026-10-24, see 0009)
 - [x] T-012 Implement 1-Click EndNote Batch Export with attached PDFs, local staging directory, pre-flight paywall check, and direct macOS integration (2026-10-20, see decision 0008)
 - [x] T-011 Automate EndNote citation (.enw) and PDF downloads with multi-source metadata resolution, on-demand streaming, and bulk ZIP export (2026-10-19)
 - [x] T-010 Implement batch paper reviews with hardware-aware concurrency, two-phase pipeline, and staggered prefill (2026-10-18, see decision 0006)

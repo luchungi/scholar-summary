@@ -1,0 +1,153 @@
+{
+  "_provenance": "endnote_types is a snapshot of EndNote 21's default reference type list, taken from the union of the type table in '/Applications/EndNote 21/EndNote.pdf' and the internal name table in '/Applications/EndNote 21/Filters/EndNote Import.enf'. Both spellings are kept where the two sources disagree (e.g. 'Conference Proceeding' vs 'Conference Proceedings'). A %0 value outside this list is NOT rejected by EndNote; it is silently replaced with the filter's default, which is what filed arXiv preprints as 'Book'. See decisions 0009 and 0010, and DE-003.",
+  "default_type": "Journal Article",
+  "endnote_types": [
+    "Aggregated Database",
+    "Ancient Text",
+    "Artwork",
+    "Audiovisual Material",
+    "Bill",
+    "Blog",
+    "Book",
+    "Book Section",
+    "Case",
+    "Catalog",
+    "Chart",
+    "Chart or Table",
+    "Classical Work",
+    "Computer Program",
+    "Conference Paper",
+    "Conference Proceeding",
+    "Conference Proceedings",
+    "Dataset",
+    "Dictionary",
+    "Discussion Forum",
+    "Edited Book",
+    "Electronic Article",
+    "Electronic Book",
+    "Electronic Book Section",
+    "Electronic Chapter",
+    "Encyclopedia",
+    "Equation",
+    "Figure",
+    "Film or Broadcast",
+    "Generic",
+    "Government Document",
+    "Grant",
+    "Hearing",
+    "Interview",
+    "Journal Article",
+    "Legal Rule or Regulation",
+    "Magazine Article",
+    "Manuscript",
+    "Map",
+    "Multimedia Application",
+    "Music",
+    "Newspaper Article",
+    "Online Database",
+    "Online Multimedia",
+    "Pamphlet",
+    "Patent",
+    "Personal Communication",
+    "Podcast",
+    "Press Release",
+    "Report",
+    "Serial",
+    "Social Media",
+    "Standard",
+    "Statute",
+    "Television Episode",
+    "Thesis",
+    "Unpublished Work",
+    "Web Page"
+  ],
+  "periodical_types": [
+    "Journal Article",
+    "Electronic Article",
+    "Magazine Article",
+    "Newspaper Article",
+    "Serial"
+  ],
+  "secondary_title_types": [
+    "Conference Paper",
+    "Conference Proceeding",
+    "Conference Proceedings",
+    "Book Section",
+    "Electronic Book Section",
+    "Electronic Chapter",
+    "Edited Book"
+  ],
+  "crossref_type_map": {
+    "journal-article": "Journal Article",
+    "posted-content": "Journal Article",
+    "proceedings-article": "Conference Paper",
+    "proceedings": "Conference Proceedings",
+    "dissertation": "Thesis",
+    "book-chapter": "Book Section",
+    "book": "Book",
+    "edited-book": "Edited Book",
+    "monograph": "Book",
+    "reference-book": "Book",
+    "report": "Report",
+    "report-component": "Report",
+    "dataset": "Dataset",
+    "standard": "Standard",
+    "peer-review": "Journal Article",
+    "other": "Journal Article"
+  },
+  "host_overrides": {
+    "openreview.net": {
+      "ref_type": "Conference Paper",
+      "comment": "OpenReview forums are conference submissions; Crossref usually has no record."
+    },
+    "proquest.com": {
+      "ref_type": "Thesis",
+      "comment": "ProQuest Dissertations & Theses."
+    },
+    "dial.uclouvain.be": {
+      "ref_type": "Thesis"
+    },
+    "diva-portal.org": {
+      "ref_type": "Thesis"
+    },
+    "repositorio.comillas.edu": {
+      "ref_type": "Thesis"
+    },
+    "dl.acm.org": {
+      "ref_type": "Conference Paper",
+      "comment": "Predominantly proceedings papers; Crossref type wins when it is a journal-article."
+    }
+  },
+  "preprint_venues": {
+    "arxiv.org": {
+      "label": "arXiv",
+      "journal_template": "arXiv preprint arXiv:{id}",
+      "ref_type": "Journal Article"
+    },
+    "biorxiv.org": {
+      "label": "bioRxiv",
+      "journal_template": "bioRxiv preprint {doi}",
+      "ref_type": "Journal Article"
+    },
+    "medrxiv.org": {
+      "label": "medRxiv",
+      "journal_template": "medRxiv preprint {doi}",
+      "ref_type": "Journal Article"
+    },
+    "researchsquare.com": {
+      "label": "Research Square",
+      "journal_template": "Research Square preprint {doi}",
+      "ref_type": "Journal Article"
+    },
+    "preprints.org": {
+      "label": "Preprints.org",
+      "journal_template": "Preprints.org preprint {doi}",
+      "ref_type": "Journal Article"
+    },
+    "ssrn.com": {
+      "label": "SSRN",
+      "journal_template": "SSRN preprint {doi}",
+      "ref_type": "Journal Article"
+    }
+  }
+}

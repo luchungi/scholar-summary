@@ -1,6 +1,6 @@
 # 0008: 1-Click EndNote Batch Export with Attached PDFs
 
-- Status: Accepted
+- Status: Accepted; decision 1 (the %< attachment tag) superseded by 0010
 - Date: 2026-10-20
 - Context: A standard `.enw` file is plain text and cannot embed binary PDFs inside itself. Previously, downloading a ZIP required unzipping, and double-clicking `citations_all.enw` imported references without any attached PDFs because the `.enw` lacked attachment tags (`%<` and `%>`).
 - Decisions:

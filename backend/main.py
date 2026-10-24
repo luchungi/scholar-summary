@@ -414,7 +414,7 @@ def bulk_export_reports(req: BulkExportRequest, session: Session = Depends(get_s
             else:
                 summary_lines.append(f"[CITATION ONLY] PDF unavailable (paywalled/HTML): {p.title}")
 
-            # Individual .enw (including %< link to the companion PDF in the zip)
+            # Individual .enw (including the %> attachment tag for the companion PDF in the zip)
             individual_enw = generate_enw_content(meta, pdf_local_rel_name)
             zip_file.writestr(f"{base_name}.enw", individual_enw.encode("utf-8"))
             all_metadata.append(meta)
@@ -485,8 +485,8 @@ def endnote_export(req: EndNoteExportRequest, session: Session = Depends(get_ses
     """
     Direct One-Click EndNote Export:
     1. Downloads PDFs into a dedicated timestamped folder: ~/Downloads/EndNote_Imports/Batch_YYYYMMDD_HHMMSS/
-    2. Writes individual .enw files with %< PDF attachments
-    3. Writes consolidated citations_all.enw with %< PDF attachments
+    2. Writes individual .enw files with %> PDF attachments
+    3. Writes consolidated citations_all.enw with %> PDF attachments
     4. Automatically launches EndNote 21 to import citations_all.enw
     """
     if not req.paper_ids:

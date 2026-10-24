@@ -78,6 +78,9 @@ def set_active_model(model_key: str):
 INTERESTS_FILE = os.getenv("INTERESTS_FILE", "user_interests.md")
 MAX_EMAIL_FETCH = int(os.getenv("MAX_EMAIL_FETCH", "10"))
 URL_RULES_PATH = os.getenv("URL_RULES_PATH", "./url/rules.json")
+# EndNote reference type vocabulary, Crossref type map, host overrides and preprint
+# journal templates used when writing .enw files (see docs/agent/decisions/0009, 0010).
+REFERENCE_RULES_PATH = os.getenv("REFERENCE_RULES_PATH", "./url/reference_rules.json")
 
 # LLM prompt budget & sampling
 # Paper text budget: sized for ~25 dense pages (excl. references) inside a 64k context,
