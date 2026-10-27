@@ -25,7 +25,8 @@ from backend.services import (
     get_latest_alerts_from_gmail,
     start_paper_run,
     active_logs,
-    get_active_run
+    get_active_run,
+    mark_active_run_interrupted
 )
 from backend.framework_manager import FrameworkManager
 import agent
@@ -789,11 +790,28 @@ def stop_server():
         return res
     raise HTTPException(status_code=500, detail=res.get("detail", "Failed to stop server"))
 
+@app.get("/api/shutdown/teardown/stream")
+def stream_shutdown_teardown():
+    """
+    Unloads the resident model and stops the active LLM server, streaming progress
+    (decision 0011). Runs to completion while this process is still alive; the frontend
+    fires POST /api/shutdown once it sees [SUCCESS]. Not refused during an active run:
+    shutdown is the escape hatch for a hung run, so the frontend warns instead.
+    """
+    def generate():
+        yield from FrameworkManager.stream_teardown()
+        yield "data: [SUCCESS]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
 @app.post("/api/shutdown")
 def shutdown_backend(background_tasks: BackgroundTasks):
     """
-    Shuts down the backend FastAPI server process gracefully.
+    Shuts down the backend FastAPI server process gracefully. The LLM teardown runs
+    first, via /api/shutdown/teardown/stream (decision 0011).
     """
+    interrupted_run_id = mark_active_run_interrupted()
+
     def perform_shutdown():
         import time
         import signal
@@ -801,7 +819,10 @@ def shutdown_backend(background_tasks: BackgroundTasks):
         os.kill(os.getpid(), signal.SIGINT)
 
     background_tasks.add_task(perform_shutdown)
-    return {"status": "success", "detail": "Backend server is shutting down..."}
+    detail = "Backend server is shutting down..."
+    if interrupted_run_id is not None:
+        detail = f"Run {interrupted_run_id} marked failed. {detail}"
+    return {"status": "success", "detail": detail, "interrupted_run_id": interrupted_run_id}
 
 # Model Management
 @app.get("/api/models")

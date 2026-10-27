@@ -164,6 +164,24 @@ def get_active_run() -> Optional[Run]:
         return run
     return None
 
+def mark_active_run_interrupted() -> Optional[int]:
+    """
+    Marks the in-flight run as failed so no row is left at "running" once the backend
+    process is killed (decision 0011). Returns the run id that was marked, else None.
+    """
+    run = get_active_run()
+    if not run:
+        return None
+    run_id = run.id
+    with Session(engine) as session:
+        db_run = session.get(Run, run_id)
+        if db_run and db_run.status == "running":
+            db_run.status = "failed"
+            session.add(db_run)
+            session.commit()
+    _clear_active_run(run_id)
+    return run_id
+
 def _set_active_run(run_id: int):
     global _active_run_id
     with _run_state_lock:

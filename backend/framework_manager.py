@@ -376,6 +376,36 @@ class FrameworkManager:
                 yield f"data: [ERROR] Exception during model load: {e}\n\n"
 
     @classmethod
+    def stream_teardown(cls, framework: Optional[str] = None) -> Generator[str, None, None]:
+        """
+        Unloads the resident model and stops the server for one framework (decision 0011).
+        Emits unnumbered progress lines; callers own any step numbering. Failures are
+        reported as warnings and never abort the sequence.
+        """
+        fw = (framework or config.get_active_framework()).lower()
+        backend = cls.get_backend(fw)
+
+        yield f"data: Checking active model in {fw.upper()}...\n\n"
+        loaded = backend.get_loaded_model()
+        if loaded:
+            yield f"data: Unloading active model '{loaded}' from {fw.upper()}...\n\n"
+            res = backend.unload_models()
+            if res.get("status") == "success":
+                yield "data: Active model unloaded.\n\n"
+            else:
+                yield f"data: [WARNING] Could not unload '{loaded}': {res.get('detail', 'unknown error')}\n\n"
+        else:
+            yield f"data: No model loaded in {fw.upper()}.\n\n"
+
+        yield f"data: Stopping {fw.upper()} server...\n\n"
+        res = backend.stop_server()
+        if res.get("status") == "success":
+            time.sleep(1.0)
+            yield f"data: {fw.upper()} server stopped.\n\n"
+        else:
+            yield f"data: [WARNING] Could not stop {fw.upper()} server: {res.get('detail', 'unknown error')}\n\n"
+
+    @classmethod
     def stream_switch_framework(cls, target_framework: str) -> Generator[str, None, None]:
         target = target_framework.lower().strip()
         if target not in ("lmstudio", "omlx"):
@@ -388,25 +418,12 @@ class FrameworkManager:
             yield "data: [SUCCESS]\n\n"
             return
 
-        # 1. Check if model is loaded in current framework
-        yield f"data: Step 1/4: Checking active model in {current.upper()}...\n\n"
-        current_backend = cls.get_backend(current)
-        loaded = current_backend.get_loaded_model()
-        if loaded:
-            yield f"data: Unloading active model '{loaded}' from {current.upper()}...\n\n"
-            current_backend.unload_models()
-            yield "data: Active model unloaded.\n\n"
-        else:
-            yield f"data: No model loaded in {current.upper()}.\n\n"
+        # 1. Tear down the current framework: unload model, stop server (decision 0011)
+        yield f"data: Step 1/3: Tearing down {current.upper()}...\n\n"
+        yield from cls.stream_teardown(current)
 
-        # 2. Stop current server
-        yield f"data: Step 2/4: Stopping {current.upper()} server...\n\n"
-        current_backend.stop_server()
-        time.sleep(1.0)
-        yield f"data: {current.upper()} server stopped.\n\n"
-
-        # 3. Switch framework config & start target server
-        yield f"data: Step 3/4: Switching configuration to {target.upper()} and starting server...\n\n"
+        # 2. Switch framework config & start target server
+        yield f"data: Step 2/3: Switching configuration to {target.upper()} and starting server...\n\n"
         config.set_active_framework(target)
         update_env_framework(target)
 
@@ -430,7 +447,7 @@ class FrameworkManager:
             yield f"data: Warning: {target.upper()} server did not report online in time. You can start it manually.\n\n"
 
         # 4. Check if a model is already loaded in target framework
-        yield f"data: Step 4/4: Checking loaded models in {target.upper()}...\n\n"
+        yield f"data: Step 3/3: Checking loaded models in {target.upper()}...\n\n"
         target_loaded = target_backend.get_loaded_model()
         if target_loaded:
             yield f"data: Found already loaded model '{target_loaded}' in {target.upper()}.\n\n"

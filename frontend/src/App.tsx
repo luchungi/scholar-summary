@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   LayoutDashboard,
   FileText,
@@ -20,6 +20,7 @@ import SyncPreview from './components/SyncPreview';
 import LogsTerminal from './components/LogsTerminal';
 import ModelLoadTerminal from './components/ModelLoadTerminal';
 import ModelSettingsPanel from './components/ModelSettingsPanel';
+import ShutdownTerminal from './components/ShutdownTerminal';
 
 interface LinkItem {
   title: string;
@@ -55,6 +56,11 @@ export default function App() {
   const [showModelLoadTerminal, setShowModelLoadTerminal] = useState(false);
   const [modelToLoad, setModelToLoad] = useState('');
   const [serverStatus, setServerStatus] = useState<'ON' | 'OFF' | 'loading' | 'error'>('loading');
+
+  // Backend shutdown states (decision 0011)
+  const [showShutdownTerminal, setShowShutdownTerminal] = useState(false);
+  const [backendStopped, setBackendStopped] = useState(false);
+  const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchFramework = async () => {
     try {
@@ -165,11 +171,13 @@ export default function App() {
     };
     init();
 
-    const interval = setInterval(() => {
+    statusPollRef.current = setInterval(() => {
       fetchServerStatus(true);
       fetchFramework();
     }, 5000);
-    return () => clearInterval(interval);
+    return () => {
+      if (statusPollRef.current) clearInterval(statusPollRef.current);
+    };
   }, []);
 
   const handleToggleServer = async () => {
@@ -223,19 +231,32 @@ export default function App() {
     fetchModels();
   };
 
-  const handleShutdownBackend = async () => {
-    if (confirm("Are you sure you want to shut down the backend server? You will need to restart it from the terminal to use the app again.")) {
-      try {
-        const res = await fetch(`${API_URL}/api/shutdown`, { method: 'POST' });
-        if (res.ok) {
-          alert("Backend server shutdown has been initiated. You can now close this browser window/tab.");
-        } else {
-          throw new Error(await res.text());
-        }
-      } catch (err: any) {
-        alert(`Failed to shut down backend: ${err.message || err}`);
-      }
+  const handleShutdownBackend = () => {
+    if (backendStopped || showShutdownTerminal) return;
+
+    const runWarning = (hasActiveRun || activeRunId !== null)
+      ? `\n\nWARNING: a paper analysis run is currently in progress${activeRunId !== null ? ` (run ${activeRunId})` : ''}. It will be stopped and marked as failed.`
+      : '';
+    const msg = `This will unload the loaded model and stop the ${framework === 'omlx' ? 'oMLX' : 'LM Studio'} server, then stop the backend itself.`
+      + `\n\nYou will need to restart the backend from the terminal to use the app again.${runWarning}`
+      + `\n\nContinue?`;
+
+    if (confirm(msg)) {
+      setShowShutdownTerminal(true);
     }
+  };
+
+  const handleBackendStopped = () => {
+    // Nothing is listening on the backend port any more: stop polling it and lock
+    // the controls that would hit it (decision 0011).
+    if (statusPollRef.current) {
+      clearInterval(statusPollRef.current);
+      statusPollRef.current = null;
+    }
+    setBackendStopped(true);
+    setServerStatus('OFF');
+    setModels([]);
+    setSelectedModel('none');
   };
 
   const handleStartSync = async (papers: LinkItem[], totalEmails: number) => {
@@ -340,8 +361,8 @@ export default function App() {
               value={framework}
               onChange={(e) => handleSwitchFramework(e.target.value as 'lmstudio' | 'omlx')}
               className="framework-select"
-              disabled={isSwitchingFramework || hasActiveRun || activeRunId !== null}
-              title={hasActiveRun || activeRunId !== null ? 'Cannot switch framework while a run is in progress' : ''}
+              disabled={isSwitchingFramework || hasActiveRun || activeRunId !== null || backendStopped}
+              title={backendStopped ? 'The backend has been stopped' : (hasActiveRun || activeRunId !== null ? 'Cannot switch framework while a run is in progress' : '')}
             >
               <option value="lmstudio">LM Studio</option>
               <option value="omlx">oMLX</option>
@@ -367,7 +388,7 @@ export default function App() {
                 </div>
                 <button
                   onClick={handleToggleServer}
-                  disabled={serverStatus === 'loading'}
+                  disabled={serverStatus === 'loading' || backendStopped}
                   className={`btn btn-server-toggle ${serverStatus === 'ON' ? 'stop' : 'start'}`}
                 >
                   {serverStatus === 'loading' ? 'Updating...' : (serverStatus === 'ON' ? 'Stop Server' : 'Start Server')}
@@ -423,10 +444,11 @@ export default function App() {
           <button
             onClick={handleShutdownBackend}
             className="btn btn-shutdown-backend"
-            title="Shut down backend server"
+            disabled={backendStopped || showShutdownTerminal}
+            title={backendStopped ? 'The backend has been stopped' : 'Unload the model, stop the LLM server, then stop the backend'}
           >
             <Power size={12} />
-            Shut Down Backend
+            {backendStopped ? 'Backend Stopped' : 'Shut Down Backend'}
           </button>
         </div>
       </aside>
@@ -495,6 +517,13 @@ export default function App() {
           modelKey={modelToLoad}
           onClose={() => setShowModelLoadTerminal(false)}
           onFinished={handleModelLoadFinished}
+        />
+      )}
+
+      {showShutdownTerminal && (
+        <ShutdownTerminal
+          onClose={() => setShowShutdownTerminal(false)}
+          onBackendStopped={handleBackendStopped}
         />
       )}
 
@@ -705,11 +734,15 @@ export default function App() {
           color: #ef4444;
           border: 1px solid rgba(239, 68, 68, 0.2);
         }
-        .btn-shutdown-backend:hover {
+        .btn-shutdown-backend:hover:not(:disabled) {
           background: rgba(239, 68, 68, 0.25);
           border-color: rgba(239, 68, 68, 0.5);
           color: #fff;
           box-shadow: 0 0 12px rgba(239, 68, 68, 0.2);
+        }
+        .btn-shutdown-backend:disabled {
+          opacity: 0.45;
+          cursor: not-allowed;
         }
         .system-indicator {
           display: flex;

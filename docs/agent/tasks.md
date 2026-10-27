@@ -5,8 +5,14 @@
 ## Next
 - [ ] T-015 Manual check in EndNote 21: import one batch and confirm %> alone still binds the
       PDF, the reference type reads Journal Article, and Research Notes is empty (see 0010)
+- [ ] T-017 Reconcile stale "running" run rows on startup, for the crash and ctrl-C paths
+      T-016 does not cover (rejected as 0011's primary mechanism, see its alternatives)
 
 ## Done (most recent first)
+- [x] T-016 Backend shutdown teardown: shared FrameworkManager.stream_teardown consumed by
+      both the switch and shutdown paths, GET /api/shutdown/teardown/stream, ShutdownTerminal.tsx,
+      active-run marking, status-poll teardown; tests/test_shutdown_teardown.py (9 tests)
+      (2026-10-27, see 0011)
 - [x] T-013 Fix EndNote export: metadata-derived validated reference types with
       url/reference_rules.json, arXiv journal string with the version from the Atom <id>,
       Crossref chaining for published preprints, dropped %X and %<, split %J/%B
