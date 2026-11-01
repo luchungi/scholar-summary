@@ -7,8 +7,17 @@
       PDF, the reference type reads Journal Article, and Research Notes is empty (see 0010)
 - [ ] T-017 Reconcile stale "running" run rows on startup, for the crash and ctrl-C paths
       T-016 does not cover (rejected as 0011's primary mechanism, see its alternatives)
+- [ ] T-025 Compare gemma-4-31B 4-bit vs 8-bit review quality on 3–4 already-reviewed papers
+- [ ] T-026 Set oMLX memory_guard_tier=aggressive and cache.enabled=false (user, per 0014)
 
 ## Done (most recent first)
+- [x] T-024 Benchmark run and analysed under normal conditions; final configuration in 0014 (2026-11-01)
+- [x] T-023 scripts/bench_concurrency.py: own `omlx serve`, confirmed restarts, memory sampling (2026-11-01, see 0013)
+- [x] T-022 Token usage and prefill/generation timing logged on streamed reports (2026-11-01)
+- [x] T-021 Capacity-error retries (2, 60s), drop to one at a time only on overlap, failure reasons in the UI (2026-11-01, see 0012)
+- [x] T-020 Token-budget admission with longest-fit backfill and a pause after long reviews (2026-11-01, see 0012, 0014)
+- [x] T-019 Triage feeds the scheduler; 4 papers in parallel; thread-safe URL rule writes (2026-11-01, see 0012)
+- [x] T-018 Concurrency default 1 in code; validated values set in .env (2026-11-01, see 0014)
 - [x] T-016 Backend shutdown teardown: shared FrameworkManager.stream_teardown consumed by
       both the switch and shutdown paths, GET /api/shutdown/teardown/stream, ShutdownTerminal.tsx,
       active-run marking, status-poll teardown; tests/test_shutdown_teardown.py (9 tests)

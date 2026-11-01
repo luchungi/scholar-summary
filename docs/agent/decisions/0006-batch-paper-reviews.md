@@ -1,6 +1,6 @@
 # 0006: Hardware-aware batch paper reviews with two-phase pipeline and staggered prefill
 
-- Status: Accepted
+- Status: Partially superseded by 0012 (items 1, 2, 4) and 0014; the memory sizing in Context is wrong, see 0012
 - Date: 2026-10-18
 - Context: Paper reviews were previously executed strictly one at a time. For batches of alert papers,
   evaluating whether batch processing is feasible required balancing inference throughput against unified

@@ -4,6 +4,7 @@ import queue
 import io
 import difflib
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -14,6 +15,7 @@ from urllib.parse import urlparse
 from sqlmodel import Session, select
 from backend.models import Run, Paper, EmailAlert
 from backend.database import engine
+from backend.review_scheduler import ReviewScheduler, estimate_review_tokens, is_capacity_abort
 import re
 
 def extract_ratings(content: str):
@@ -343,7 +345,8 @@ def extract_web_page_title(url: str) -> Optional[str]:
         print(f"[-] Error auto-extracting web page title: {e}")
     return None
 
-def _record_failed_paper(run_id: int, url: str, title: str):
+def _record_failed_paper(run_id: int, url: str, title: str, reason: Optional[str] = None):
+    # reason goes in skip_reason, which the Failed & Skipped tab shows under the title.
     with _db_write_lock:
         with Session(engine) as session:
             stmt = select(Paper).where(Paper.url == url, Paper.status == "failed")
@@ -353,13 +356,15 @@ def _record_failed_paper(run_id: int, url: str, title: str):
                     title=title,
                     url=url,
                     status="failed",
-                    run_id=run_id
+                    run_id=run_id,
+                    skip_reason=reason
                 )
                 session.add(db_paper)
             else:
                 existing_failed.title = title
                 existing_failed.date_processed = datetime.now(timezone.utc).replace(tzinfo=None)
                 existing_failed.run_id = run_id
+                existing_failed.skip_reason = reason
                 session.add(existing_failed)
             session.commit()
 
@@ -400,24 +405,43 @@ def _record_success_paper(run_id: int, url: str, title: str, report_path: str, q
                 session.delete(existing)
             session.commit()
 
+def review_cooldown_seconds() -> float:
+    """
+    Cool-down after long reviews (decision 0014). 30s is enough with oMLX's prompt cache
+    off; with it on, oMLX's SSD cache save holds 12-20 GB for 45-60s, so use the longer
+    value and warn, since the cache is a global oMLX setting the app does not change.
+    """
+    seconds = config.REVIEW_COOLDOWN_SECONDS
+    if config.get_active_framework() == "omlx" and config.get_omlx_cache_enabled():
+        print(f"[!] oMLX's prompt cache is on (~/.omlx/settings.json cache.enabled). It saves every "
+              f"review's prompt to SSD with a 12-20 GB memory spike and is never reused here; "
+              f"turn it off for batch runs. Using a {max(seconds, config.REVIEW_COOLDOWN_SECONDS_CACHE_ON):.0f}s "
+              f"cool-down after long reviews meanwhile.")
+        seconds = max(seconds, config.REVIEW_COOLDOWN_SECONDS_CACHE_ON)
+    return seconds
+
 def run_paper_processing_task(
     run_id: int,
     papers_to_process: List[Dict[str, str]],
     q: queue.Queue
 ):
     """
-    Two-phase batch task runner (docs/agent/decisions/0006):
-    - Phase 1: Rapid prefetch, title extraction, and relevance gate (eliminates off-topic papers).
-    - Phase 2: Bounded review worker pool with staggered prompt prefill to protect unified memory.
+    Batch task runner (docs/agent/decisions/0012):
+    - Triage: papers are fetched, titled and relevance-gated config.TRIAGE_CONCURRENCY
+      at a time; each paper that passes goes to the review scheduler as soon as it is ready.
+    - Review: ReviewScheduler admits reviews by token budget, longest first, with a
+      staggered prefill and one retry after a server memory abort.
     """
     with LogCapture(q):
         print(f"[+] Starting paper processing run {run_id} at {datetime.now()}")
         print(f"[+] Papers in batch: {len(papers_to_process)}")
 
-        success_count = 0
-        failure_count = 0
-        skipped_count = 0
+        counts = {"success": 0, "failure": 0, "skipped": 0, "queued": 0}
         counts_lock = threading.Lock()
+
+        def bump(key: str):
+            with counts_lock:
+                counts[key] += 1
 
         # Load user interests
         try:
@@ -426,22 +450,72 @@ def run_paper_processing_task(
             print(f"[-] Error loading user interests: {e}")
             current_interests = ""
 
-        # =========================================================================
-        # PHASE 1: Rapid Triage & Prefetch
-        # =========================================================================
-        print(f"\n{'=' * 60}")
-        print(f"[*] PHASE 1: Rapid Prefetch & Relevance Triage ({len(papers_to_process)} candidate papers)")
-        print(f"{'=' * 60}")
+        max_concurrency = config.get_max_concurrent_reviews()
+        print(f"[+] Review scheduling: up to {max_concurrency} review(s) at once within a "
+              f"{config.REVIEW_TOKEN_BUDGET}-token budget (detected RAM: {config.get_system_ram_gb():.1f} GB); "
+              f"triage runs {config.TRIAGE_CONCURRENCY} paper(s) at a time.")
 
-        approved_papers = []
+        # =========================================================================
+        # REVIEW: token-budget scheduler fed by triage
+        # =========================================================================
+        def review_fn(paper: Dict[str, Any], tag: str, on_first_token):
+            print(f"{tag} Starting report generation using model: {config.get_active_model()}...")
+            return agent.generate_paper_report(
+                paper["title"], paper["url"], paper["paper_text"], current_interests,
+                paper["access_info"], on_first_token=on_first_token
+            )
 
-        for idx, paper_info in enumerate(papers_to_process, 1):
+        def on_review_done(paper: Dict[str, Any], tag: str, report: Optional[str], error: Optional[BaseException]):
+            p_title, p_url, p_access = paper["title"], paper["url"], paper["access_info"]
+            if error is not None:
+                print(f"{tag} [-] Error generating report: {error}")
+                bump("failure")
+                if is_capacity_abort(error):
+                    reason = f"LLM server aborted the review for capacity, also on retry: {error}"
+                else:
+                    reason = f"Report generation failed: {error}"
+                _record_failed_paper(run_id, p_url, p_title, reason=reason[:500])
+                return
+            try:
+                header = f"# {p_title}\n\n**Link**: [{p_url}]({p_url})\n\n"
+                if p_access:
+                    header += f"**Source**: {p_access}\n\n"
+                full_report = header + "---\n\n" + report
+
+                os.makedirs(config.REPORTS_DIR, exist_ok=True)
+                safe_title = sanitize_filename(p_title)
+                report_path = Path(config.REPORTS_DIR) / f"report_{safe_title}.md"
+                report_path.write_text(full_report, encoding="utf-8")
+                print(f"{tag} [+] Report saved to {report_path}")
+
+                q_val, r_val = extract_ratings(full_report)
+                _record_success_paper(run_id, p_url, p_title, str(report_path), q_val, r_val)
+                bump("success")
+            except Exception as save_err:
+                print(f"{tag} [-] Error saving report/database: {save_err}")
+                bump("failure")
+                _record_failed_paper(run_id, p_url, p_title, reason=f"Saving the report failed: {save_err}"[:500])
+
+        scheduler = ReviewScheduler(
+            review_fn, on_review_done,
+            max_concurrency=max_concurrency,
+            token_budget=config.REVIEW_TOKEN_BUDGET,
+            thread_context=lambda: LogCapture(q),
+            cooldown_seconds=review_cooldown_seconds(),
+        )
+
+        # =========================================================================
+        # TRIAGE: parallel fetch, title extraction and relevance gate
+        # =========================================================================
+        total = len(papers_to_process)
+
+        def triage_one(idx: int, paper_info: Dict[str, str]):
             title = paper_info.get("title", "").strip()
             url = paper_info.get("url")
             force = str(paper_info.get("force", "")).lower() in ("true", "1", "yes")
 
             short_label = title[:35] + "..." if len(title) > 35 else (title or url or "Paper")
-            print(f"\n[Triage {idx}/{len(papers_to_process)}: {short_label}] Fetching paper text from: {url}")
+            print(f"\n[Triage {idx}/{total}: {short_label}] Fetching paper text from: {url}")
 
             # Fetch text
             paper_text = None
@@ -454,13 +528,12 @@ def run_paper_processing_task(
 
             if not paper_text:
                 print(f"[Triage: {short_label}] [-] Could not retrieve text. Marked as failed.")
-                with counts_lock:
-                    failure_count += 1
+                bump("failure")
                 db_title = title
                 if not db_title or db_title in ("Manual URL Analysis", "Manual Input Paper", "Untitled"):
                     db_title = extract_web_page_title(url) or "Manual Input Paper"
-                _record_failed_paper(run_id, url, db_title)
-                continue
+                _record_failed_paper(run_id, url, db_title, reason="Could not retrieve the paper text.")
+                return
 
             # Auto-extract title if generic
             if not title or title in ("Manual URL Analysis", "Manual Input Paper", "Untitled"):
@@ -483,10 +556,9 @@ def run_paper_processing_task(
                 if gate_score is not None and gate_score < config.RELEVANCE_GATE_THRESHOLD:
                     print(f"[Triage: {short_label}] [*] Skipped: relevance score {gate_score}/5 "
                           f"< threshold {config.RELEVANCE_GATE_THRESHOLD}. Reason: {gate_reason}")
-                    with counts_lock:
-                        skipped_count += 1
+                    bump("skipped")
                     _record_skipped_paper(run_id, url, title, gate_score, gate_reason)
-                    continue
+                    return
                 elif gate_score is not None:
                     print(f"[Triage: {short_label}] [+] Passed relevance gate ({gate_score}/5).")
 
@@ -499,129 +571,44 @@ def run_paper_processing_task(
             else:
                 access_info = None
 
-            approved_papers.append({
-                "title": title,
-                "url": url,
-                "paper_text": paper_text,
-                "access_info": access_info,
-            })
+            tokens = estimate_review_tokens(paper_text, current_interests)
+            scheduler.submit(
+                {"title": title, "url": url, "paper_text": paper_text, "access_info": access_info},
+                tokens,
+                label=title[:30] + "..." if len(title) > 30 else title,
+            )
+            bump("queued")
+            print(f"[Triage: {short_label}] [+] Queued for full review (~{tokens} tokens).")
 
-        # =========================================================================
-        # PHASE 2: Bounded Review Pool with Staggered Prefill
-        # =========================================================================
-        print(f"\n{'=' * 60}")
-        print(f"[*] PHASE 2: Full Paper Reviews ({len(approved_papers)} paper(s) approved)")
-        print(f"{'=' * 60}")
+        def triage_task(idx: int, paper_info: Dict[str, str]):
+            with LogCapture(q):
+                try:
+                    triage_one(idx, paper_info)
+                except Exception as e:
+                    url = paper_info.get("url")
+                    title = paper_info.get("title", "").strip() or url or "Manual Input Paper"
+                    print(f"[Triage {idx}/{total}] [-] Unexpected triage error: {e}")
+                    bump("failure")
+                    _record_failed_paper(run_id, url, title, reason=f"Triage failed: {e}"[:500])
 
-        if not approved_papers:
-            print("[*] No papers passed triage for full review.")
-        else:
-            max_concurrency = min(config.get_max_concurrent_reviews(), len(approved_papers))
-            ram_detected = config.get_system_ram_gb()
-            print(f"[+] Review concurrency: {max_concurrency} parallel slot(s) (detected RAM: {ram_detected:.1f} GB, cap: {config.get_max_concurrent_reviews()})")
+        def run_triage():
+            with LogCapture(q):
+                try:
+                    with ThreadPoolExecutor(max_workers=max(1, config.TRIAGE_CONCURRENCY),
+                                            thread_name_prefix=f"Triage-{run_id}") as pool:
+                        for idx, paper_info in enumerate(papers_to_process, 1):
+                            pool.submit(triage_task, idx, paper_info)
+                finally:
+                    scheduler.close()
+                print(f"\n[*] Triage finished: {counts['queued']} of {total} paper(s) queued for full review.")
 
-            paper_queue: queue.Queue = queue.Queue()
-            for p in approved_papers:
-                paper_queue.put(p)
-
-            prefill_lock = threading.Lock()
-            concurrency_state = {"current_max": max_concurrency}
-
-            def review_worker(slot_id: int):
-                nonlocal success_count, failure_count
-                with LogCapture(q):
-                    while not paper_queue.empty():
-                        if slot_id > concurrency_state["current_max"]:
-                            break
-
-                        try:
-                            paper_data = paper_queue.get_nowait()
-                        except queue.Empty:
-                            break
-
-                        p_title = paper_data["title"]
-                        p_url = paper_data["url"]
-                        p_text = paper_data["paper_text"]
-                        p_access = paper_data["access_info"]
-                        short_t = p_title[:30] + "..." if len(p_title) > 30 else p_title
-                        slot_tag = f"[Slot {slot_id}: {short_t}]"
-
-                        print(f"\n{slot_tag} Waiting for prefill lock to avoid concurrent activation peak...")
-                        prefill_lock.acquire()
-                        prefill_released = False
-
-                        def on_first_token():
-                            nonlocal prefill_released
-                            if not prefill_released:
-                                prefill_released = True
-                                prefill_lock.release()
-                                print(f"{slot_tag} [+] Prefill completed; first token received. Prefill lock released.")
-
-                        try:
-                            print(f"{slot_tag} Starting report generation using model: {config.get_active_model()}...")
-                            report = agent.generate_paper_report(
-                                p_title, p_url, p_text, current_interests, p_access,
-                                on_first_token=on_first_token
-                            )
-                        except Exception as err:
-                            print(f"{slot_tag} [-] Error generating report: {err}")
-                            err_str = str(err).lower()
-                            # Check for slot rejection / busy errors to gracefully degrade
-                            if "busy" in err_str or "slot" in err_str or "overload" in err_str or "503" in err_str:
-                                print(f"{slot_tag} [!] Server rejected concurrent slot. Degrading to sequential execution (concurrency=1).")
-                                concurrency_state["current_max"] = 1
-                                paper_queue.put(paper_data)
-                                break
-
-                            with counts_lock:
-                                failure_count += 1
-                            _record_failed_paper(run_id, p_url, p_title)
-                            continue
-                        finally:
-                            if not prefill_released:
-                                prefill_released = True
-                                prefill_lock.release()
-
-                        # Save report and database record
-                        try:
-                            header = f"# {p_title}\n\n**Link**: [{p_url}]({p_url})\n\n"
-                            if p_access:
-                                header += f"**Source**: {p_access}\n\n"
-                            full_report = header + "---\n\n" + report
-
-                            os.makedirs(config.REPORTS_DIR, exist_ok=True)
-                            safe_title = sanitize_filename(p_title)
-                            report_path = Path(config.REPORTS_DIR) / f"report_{safe_title}.md"
-                            report_path.write_text(full_report, encoding="utf-8")
-                            print(f"{slot_tag} [+] Report saved to {report_path}")
-
-                            q_val, r_val = extract_ratings(full_report)
-                            _record_success_paper(run_id, p_url, p_title, str(report_path), q_val, r_val)
-                            with counts_lock:
-                                success_count += 1
-                        except Exception as save_err:
-                            print(f"{slot_tag} [-] Error saving report/database: {save_err}")
-                            with counts_lock:
-                                failure_count += 1
-                            _record_failed_paper(run_id, p_url, p_title)
-
-            # Launch worker threads
-            threads = []
-            for sid in range(1, max_concurrency + 1):
-                t = threading.Thread(target=review_worker, args=(sid,), name=f"ReviewWorker-{sid}")
-                threads.append(t)
-                t.start()
-
-            for t in threads:
-                t.join()
-
-            # If fallback occurred and any paper remained re-queued, finish sequentially
-            if not paper_queue.empty():
-                print(f"[*] Processing remaining {paper_queue.qsize()} paper(s) sequentially...")
-                concurrency_state["current_max"] = 1
-                review_worker(1)
+        triage_thread = threading.Thread(target=run_triage, name=f"TriageCoordinator-{run_id}")
+        triage_thread.start()
+        scheduler.run()
+        triage_thread.join()
 
         # Complete run updates
+        success_count, failure_count, skipped_count = counts["success"], counts["failure"], counts["skipped"]
         print(f"\n[+] Run {run_id} finished! Succeeded: {success_count}, "
               f"Failed: {failure_count}, Skipped (low relevance): {skipped_count}")
         with _db_write_lock:

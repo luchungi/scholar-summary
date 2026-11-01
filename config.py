@@ -36,6 +36,15 @@ def get_omlx_api_key() -> str:
             pass
     return ""
 
+def get_omlx_cache_enabled():
+    """oMLX's global prompt-cache setting (read only), or None if it can't be read."""
+    settings_path = Path.home() / ".omlx" / "settings.json"
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        return bool(data.get("cache", {}).get("enabled", True))
+    except Exception:
+        return None
+
 OMLX_BASE_URL = os.getenv("OMLX_BASE_URL", "http://localhost:8001/v1")
 OMLX_MODEL = os.getenv("OMLX_MODEL", "openai:")
 OMLX_API_KEY = get_omlx_api_key()
@@ -109,7 +118,7 @@ MODEL_SETTINGS_PATH = os.getenv("MODEL_SETTINGS_PATH", "model_settings.json")
 RELEVANCE_GATE_ENABLED = os.getenv("RELEVANCE_GATE_ENABLED", "true").lower() in ("1", "true", "yes")
 RELEVANCE_GATE_THRESHOLD = float(os.getenv("RELEVANCE_GATE_THRESHOLD", "2.5"))
 
-# Concurrency & Batch Settings (docs/agent/decisions/0006)
+# Concurrency & Batch Settings (docs/agent/decisions/0006, 0012)
 def get_system_ram_gb() -> float:
     """Returns detected system RAM in GB, or a safe default of 16.0."""
     try:
@@ -127,10 +136,10 @@ def get_system_ram_gb() -> float:
     return 16.0
 
 def get_default_max_concurrency() -> int:
-    ram_gb = get_system_ram_gb()
-    # 64GB Mac Studio can safely handle 2 slots at 48k tokens context.
-    # 16GB M1 Mac must strictly stay at 1.
-    return 2 if ram_gb >= 48.0 else 1
+    # One review at a time until the concurrency benchmark (T-024) shows a win:
+    # fixed 2 slots on the 64GB Mac ran slower and lost papers to oMLX memory aborts
+    # (0012.1, DE-005). Set MAX_CONCURRENT_REVIEWS to opt in.
+    return 1
 
 MAX_CONCURRENT_REVIEWS = int(os.getenv("MAX_CONCURRENT_REVIEWS", str(get_default_max_concurrency())))
 
@@ -139,6 +148,22 @@ def get_max_concurrent_reviews() -> int:
     if env_val and env_val.isdigit():
         return int(env_val)
     return MAX_CONCURRENT_REVIEWS
+
+# Reviews are admitted while the estimated tokens in flight (prompt + output reserve)
+# stay within this budget; a paper over budget on its own runs alone (0012.2).
+REVIEW_TOKEN_BUDGET = int(os.getenv("REVIEW_TOKEN_BUDGET", "40000"))
+REVIEW_OUTPUT_RESERVE_TOKENS = int(os.getenv("REVIEW_OUTPUT_RESERVE_TOKENS", "2000"))
+# oMLX holds 12-20 GB above the model for ~45-60s after a long review ends, and rejects
+# or unloads on a prompt sent in that window: pause dispatch after reviews this long.
+REVIEW_COOLDOWN_TOKENS = int(os.getenv("REVIEW_COOLDOWN_TOKENS", "30000"))
+REVIEW_COOLDOWN_SECONDS = float(os.getenv("REVIEW_COOLDOWN_SECONDS", "60"))
+# The spike comes from oMLX saving the prompt cache to SSD and takes 45-60s to settle;
+# with oMLX's cache on, the cool-down never drops below this (decision 0014).
+REVIEW_COOLDOWN_SECONDS_CACHE_ON = float(os.getenv("REVIEW_COOLDOWN_SECONDS_CACHE_ON", "60"))
+# Wait before retrying a review the server refused or aborted for capacity.
+REVIEW_RETRY_DELAY_SECONDS = float(os.getenv("REVIEW_RETRY_DELAY_SECONDS", "60"))
+# Papers fetched and relevance-gated in parallel during triage (0012.3).
+TRIAGE_CONCURRENCY = int(os.getenv("TRIAGE_CONCURRENCY", "4"))
 
 # Report Settings
 REPORTS_DIR = os.getenv("REPORTS_DIR", "reports")

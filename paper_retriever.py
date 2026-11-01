@@ -1,6 +1,8 @@
 import io
+import os
 import re
 import json
+import threading
 from pathlib import Path
 import requests
 from urllib.parse import urlparse, urljoin
@@ -76,18 +78,29 @@ def load_rules():
         print(f"Error loading rules from {URL_RULES_PATH}: {e}")
         return {}
 
+# Triage fetches papers in parallel (0012.3), so rule writes re-read the file under a
+# lock and replace it atomically: a stale copy can't drop another thread's new rule,
+# and a reader never sees a half-written file.
+_rules_lock = threading.Lock()
+
 def save_rules(rules):
     try:
         URL_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(URL_RULES_PATH, "w", encoding="utf-8") as f:
+        tmp_path = URL_RULES_PATH.with_name(URL_RULES_PATH.name + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(rules, f, indent=2)
+        os.replace(tmp_path, URL_RULES_PATH)
     except Exception as e:
         print(f"Error saving rules to {URL_RULES_PATH}: {e}")
 
+def set_domain_rule(domain, rules_list):
+    with _rules_lock:
+        rules_schema = load_rules()
+        rules_schema[domain] = {"rules": rules_list}
+        save_rules(rules_schema)
+
 def write_none_rule(domain):
-    rules_schema = load_rules()
-    rules_schema[domain] = {"rules": [{"type": "none"}]}
-    save_rules(rules_schema)
+    set_domain_rule(domain, [{"type": "none"}])
 
 def apply_rules(url, rules_list, html_content=None, timeout=15):
     """
@@ -202,9 +215,7 @@ def learn_rules_for_domain(url, domain, html_content, attempt=1, error_context=N
 
         if "application/pdf" in content_type or resolved_url.lower().endswith(".pdf"):
             print("[+] Test SUCCESS! Retrieved PDF content.")
-            rules_schema = load_rules()
-            rules_schema[domain] = {"rules": [rule]}
-            save_rules(rules_schema)
+            set_domain_rule(domain, [rule])
             return resolved_url
         else:
             raise ValueError(f"URL did not return PDF content (Content-Type: {content_type}).")
@@ -351,8 +362,7 @@ def _retrieve_raw(url, timeout=15):
             content_type = resp.headers.get("Content-Type", "").lower()
             if "application/pdf" in content_type or resolved_url.lower().endswith(".pdf"):
                 print(f"[+] Direct PDF detected. Saving 'direct' rule for domain: {domain}")
-                rules_schema[domain] = {"rules": [{"type": "direct"}]}
-                save_rules(rules_schema)
+                set_domain_rule(domain, [{"type": "direct"}])
             else:
                 print(f"Direct check did not yield PDF. Fetching HTML to learn rules for {domain}...")
                 get_resp = requests.get(resolved_url, headers=HEADERS, timeout=timeout)

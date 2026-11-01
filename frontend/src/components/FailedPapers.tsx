@@ -114,7 +114,7 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
                 </div>
                 <div className="card-body">
                   <h3 className="paper-title">{paper.title}</h3>
-                  {paper.status === 'skipped' && paper.skip_reason && (
+                  {paper.skip_reason && (
                     <p className="skip-reason">{paper.skip_reason}</p>
                   )}
                   <a href={paper.url} target="_blank" rel="noopener noreferrer" className="paper-url">

@@ -1,6 +1,7 @@
 import aisuite as ai
 import json
 import re
+import time
 import config
 import model_settings
 
@@ -253,6 +254,8 @@ This section is REQUIRED and must be the last section. It contains ONLY the foll
             chunks = []
             first_token_notified = False
             usage = None
+            t_start = time.monotonic()
+            t_first = None
             try:
                 stream_resp = get_client().chat.completions.create(
                     model=config.get_active_model(),
@@ -262,6 +265,8 @@ This section is REQUIRED and must be the last section. It contains ONLY the foll
                     ],
                     temperature=settings["temperature"],
                     stream=True,
+                    # Without this a streamed response carries no usage chunk.
+                    stream_options={"include_usage": True},
                     **thinking_kwargs
                 )
                 for chunk in stream_resp:
@@ -274,6 +279,7 @@ This section is REQUIRED and must be the last section. It contains ONLY the foll
                         reasoning = getattr(delta, "reasoning_content", None) or ""
                         if (content or reasoning) and not first_token_notified:
                             first_token_notified = True
+                            t_first = time.monotonic()
                             try:
                                 on_first_token()
                             except Exception:
@@ -283,6 +289,12 @@ This section is REQUIRED and must be the last section. It contains ONLY the foll
                 report = "".join(chunks)
                 if usage:
                     _log_usage(type("UsageWrapper", (), {"usage": usage}))
+                t_end = time.monotonic()
+                if t_first is not None:
+                    gen_s = t_end - t_first
+                    rate = (f", {usage.completion_tokens / gen_s:.1f} tok/s"
+                            if usage and gen_s > 0 else "")
+                    print(f"Timing: prefill {t_first - t_start:.1f}s, generation {gen_s:.1f}s{rate}")
             finally:
                 if not first_token_notified and on_first_token:
                     try:
