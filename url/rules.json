@@ -415,5 +415,75 @@
         "type": "none"
       }
     ]
+  },
+  "alexandria.unisg.ch": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "assets-eu.researchsquare.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "aaltodoc.aalto.fi": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "ijsrem.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "atlantis-press.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "optimumplanlama.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "kavinravi.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "davidzonn.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "shs-conferences.org": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "ijaeic.com": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
   }
 }
