@@ -485,5 +485,26 @@
         "type": "direct"
       }
     ]
+  },
+  "ojs.bonviewpress.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
+  },
+  "hal.science": {
+    "rules": [
+      {
+        "type": "direct"
+      }
+    ]
+  },
+  "openurl.ebsco.com": {
+    "rules": [
+      {
+        "type": "none"
+      }
+    ]
   }
 }

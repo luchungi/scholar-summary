@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { ArrowLeft, Send, Sparkles, AlertCircle, Bookmark, ExternalLink, Loader, Trash, Download, FileDown, BookMarked, BookOpen, FolderOpen, CheckCircle2, X } from 'lucide-react';
@@ -326,7 +327,7 @@ export default function ReportDetail({ reportId, onBack }: ReportDetailProps) {
           
           <div className="markdown-render-body">
             <ReactMarkdown
-              remarkPlugins={[remarkMath]}
+              remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkMath]}
               rehypePlugins={[rehypeKatex]}
               components={{
                 a: ({ href, children }) => (

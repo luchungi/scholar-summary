@@ -66,6 +66,132 @@ def scrape_html_text(html_content):
     clean_text = "\n".join(chunk for chunk in chunks if chunk)
     return clean_text
 
+def is_pdf_bytes(data):
+    """
+    True if the bytes are a PDF. Sites serve PDFs from links with no .pdf ending and with
+    a generic Content-Type (repository "/bitstreams/<id>/download" links), and serve HTML
+    challenge pages from links that do end in .pdf, so the content decides, not the name.
+    """
+    return b"%PDF-" in (data or b"")[:1024]
+
+# What a bot-protection page says instead of the paper (Cloudflare, Akamai, AWS WAF,
+# Anubis, OpenReview, Springer). Such a page is short, so the phrases are only looked for
+# in short texts: a real paper may well mention a CAPTCHA.
+_CHALLENGE_PHRASES = re.compile(
+    r"just a moment|enable javascript|javascript is disabled|enable js\b|captcha|"
+    r"verify(?:ing)? (?:that )?you(?:'re| are)(?: not a robot| human)|verifying your browser|"
+    r"client challenge|not a (?:bot|robot)|access denied|security check|unusual activity|"
+    r"request (?:is|was) blocked|checking your browser",
+    re.IGNORECASE,
+)
+CHALLENGE_MAX_CHARS = 2500
+# HTTP statuses a site answers with when it turns a script away. (A 503 counts only when
+# the page also reads like a browser check: a server that is simply down says 503 too.)
+BLOCKED_STATUSES = {403, 405, 429}
+# Below this a page has nothing to judge a paper by, not even an abstract.
+MIN_READABLE_CHARS = 300
+MIN_ABSTRACT_CHARS = 200
+
+def looks_like_bot_challenge(text):
+    return len(text) <= CHALLENGE_MAX_CHARS and bool(_CHALLENGE_PHRASES.search(text))
+
+_ABSTRACT_META_NAMES = ("citation_abstract", "dc.description", "dcterms.abstract", "eprints.abstract",
+                        "og:description", "twitter:description", "description")
+_TITLE_META_NAMES = ("citation_title", "dc.title", "og:title")
+
+def extract_page_metadata(html_content):
+    """
+    Reads the paper's title and abstract out of a landing page's metadata: the <meta> tags
+    publishers write for Google Scholar, and the JSON that IEEE Xplore embeds in a script
+    (its visible page text is menus only). Returns {"title": str|None, "abstract": str|None}.
+    """
+    title, abstract = None, None
+    try:
+        soup = BeautifulSoup(html_content, "html.parser")
+        found = {}
+        for meta in soup.find_all("meta"):
+            name = (meta.get("name") or meta.get("property") or "").strip().lower()
+            content = " ".join((meta.get("content") or "").split())
+            if name and content and len(content) > len(found.get(name, "")):
+                found[name] = content
+        title = next((found[n] for n in _TITLE_META_NAMES if found.get(n)), None)
+        candidates = [BeautifulSoup(found[n], "html.parser").get_text(" ") for n in _ABSTRACT_META_NAMES if found.get(n)]
+        if candidates:
+            abstract = " ".join(max(candidates, key=len).split())
+    except Exception as e:
+        print(f"[-] Error reading page metadata: {e}")
+
+    match = re.search(r"xplGlobal\.document\.metadata\s*=\s*(\{.*?\});\s*$", html_content, re.DOTALL | re.MULTILINE)
+    if match:
+        try:
+            data = json.loads(match.group(1))
+            ieee_abstract = " ".join(BeautifulSoup(data.get("abstract") or "", "html.parser").get_text(" ").split())
+            if len(ieee_abstract) > len(abstract or ""):
+                abstract = ieee_abstract
+            title = data.get("title") or data.get("displayDocTitle") or title
+        except Exception:
+            pass
+    return {"title": title or None, "abstract": abstract or None}
+
+def _fetch(url, timeout=15):
+    """
+    GETs a URL once and says what came back.
+    Returns {"url", "status", "body", "html", "is_pdf", "error"}; html is None for a PDF.
+    """
+    page = {"url": url, "status": None, "body": b"", "html": None, "is_pdf": False, "error": None}
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=timeout)
+        page["status"] = response.status_code
+        page["body"] = response.content or b""
+        page["is_pdf"] = is_pdf_bytes(page["body"])
+        if not page["is_pdf"]:
+            page["html"] = response.text
+    except Exception as e:
+        page["error"] = str(e)
+    return page
+
+def _pdf_text(page):
+    """Text of a fetched PDF, or "" if it has none (a scan) or cannot be opened."""
+    try:
+        return extract_text_from_pdf(page["body"])
+    except Exception as e:
+        print(f"[-] Could not parse the PDF from {page['url']}: {e}")
+        return ""
+
+def classify_page(page):
+    """
+    Decides what a fetched non-PDF page is worth. Returns a dict with "coverage":
+      "full"     - enough text to review as the paper itself
+      "abstract" - a landing page: an abstract or a short description, not the paper
+      "blocked"  - the site turned the request away (bot protection)
+      "failed"   - nothing usable
+    plus "text", "abstract", "title" and, for blocked/failed, a "reason".
+    """
+    if page["error"]:
+        return {"coverage": "failed", "text": "", "reason": f"Could not reach the site ({page['error'][:150]})"}
+
+    html = page["html"] or ""
+    try:
+        text = scrape_html_text(html)
+    except Exception:
+        text = ""
+    status = page["status"]
+
+    if status in BLOCKED_STATUSES or looks_like_bot_challenge(text):
+        detail = f"HTTP {status}" if status != 200 else "it answered with a browser-check page"
+        return {"coverage": "blocked", "text": "", "reason": f"Blocked by the site's bot protection ({detail})"}
+    if status is not None and status >= 400:
+        return {"coverage": "failed", "text": "", "reason": f"The site returned HTTP {status}"}
+
+    meta = extract_page_metadata(html)
+    abstract = meta["abstract"] if meta["abstract"] and len(meta["abstract"]) >= MIN_ABSTRACT_CHARS else None
+    if len(text) >= config.HTML_FULLTEXT_MIN_CHARS:
+        return {"coverage": "full", "text": text, "abstract": abstract, "title": meta["title"]}
+    if abstract or len(text) >= MIN_READABLE_CHARS:
+        return {"coverage": "abstract", "text": text, "abstract": abstract, "title": meta["title"]}
+    return {"coverage": "failed", "text": "", "title": meta["title"],
+            "reason": f"The page had no readable paper text ({len(text)} characters)"}
+
 URL_RULES_PATH = Path(config.URL_RULES_PATH)
 
 def load_rules():
@@ -191,8 +317,9 @@ def learn_rules_for_domain(url, domain, html_content, attempt=1, error_context=N
         rule = agent.propose_pdf_rule(url, links_summary, error_context)
         print(f"Agent proposed rule: {json.dumps(rule)}")
     except Exception as e:
+        # The LLM call failing says nothing about the site, so no rule is saved: the next
+        # paper from this domain gets another try. This paper falls back to the page text.
         print(f"[-] Agent failed to propose a rule: {e}")
-        write_none_rule(domain)
         return None
 
     rule_type = rule.get("type")
@@ -276,66 +403,128 @@ def prepare_paper_text(text):
     text = strip_references(text)
     return truncate_to_budget(text)
 
-def retrieve_paper(url, timeout=15):
+GENERIC_TITLES = ("Manual URL Analysis", "Manual Input Paper", "Untitled", "Untitled Resource")
+
+def retrieve_paper(url, timeout=15, title=None):
     """
-    Retrieves paper text plus factual info on how it was obtained.
-    Returns a dict: {"text": str, "source": "pdf"|"html", "raw_chars": int, "truncated": bool}
-    or None if retrieval failed.
+    Retrieves a paper's text and says how much of the paper it is.
+    Always returns a dict:
+      "coverage": "full"     - the paper itself (text is ready for review)
+                  "abstract" - only a landing page / abstract was reachable
+                  "blocked"  - the site's bot protection turned the request away
+                  "failed"   - nothing usable came back
+      "text":      prepared text for "full", the page text for "abstract", else None
+      "source":    "pdf" | "html" | None
+      "raw_chars", "truncated": as before, for "full"
+      "abstract":  the abstract, when the page or an academic API gave one
+      "title":     a clean title from the page or an API, when found
+      "reason":    why there is no full text (for the Failed & Skipped tab)
+      "note":      set when the text came from somewhere other than the link (arXiv copy)
+    title: the paper's title if known; used to look for an arXiv copy when the link fails.
     """
-    raw = _retrieve_raw(url, timeout)
-    if not raw or not raw.get("text"):
-        return None
-    raw_chars = len(raw["text"])
-    text, truncated = prepare_paper_text(raw["text"])
-    return {
-        "text": text,
-        "source": raw["source"],
-        "raw_chars": raw_chars,
-        "truncated": truncated,
+    raw = _retrieve_raw(url, timeout, title)
+    result = {
+        "coverage": raw["coverage"],
+        "text": None,
+        "source": raw.get("source"),
+        "raw_chars": len(raw.get("text") or ""),
+        "truncated": False,
+        "abstract": raw.get("abstract"),
+        "title": raw.get("title"),
+        "reason": raw.get("reason"),
+        "note": raw.get("note"),
     }
+    if raw["coverage"] == "full":
+        result["text"], result["truncated"] = prepare_paper_text(raw["text"])
+    elif raw["coverage"] == "abstract":
+        result["text"] = raw.get("text") or None
+    return result
 
 def retrieve_paper_text(url, timeout=15):
     """
-    Backwards-compatible wrapper returning prepared text only.
+    Backwards-compatible wrapper returning prepared full text only (None otherwise).
     """
     result = retrieve_paper(url, timeout)
-    return result["text"] if result else None
+    return result["text"] if result["coverage"] == "full" else None
 
-def _retrieve_raw(url, timeout=15):
+def _usable_title(*candidates):
+    for candidate in candidates:
+        candidate = " ".join((candidate or "").split())  # also turns non-breaking spaces into spaces
+        if candidate and candidate not in GENERIC_TITLES:
+            return candidate
+    return None
+
+def _retrieve_raw(url, timeout=15, title=None):
     """
     Retrieves the full text of a paper from a URL.
-    Supports:
+    Order:
     - Academic API retrieval (arXiv, Semantic Scholar)
-    - Domain specific URL rules (loaded dynamically from url/rules.json)
-    - Automatically discovers rules for new domains using LLM agent
-    - Fallback to HTML scraping
-    Returns {"text": str, "source": "pdf"|"html"} or None.
+    - Domain specific URL rules (loaded dynamically from url/rules.json), learned for a
+      new domain by the LLM agent
+    - The page itself: a PDF if that is what comes back, else its HTML, classified by
+      classify_page
+    - If that did not give the paper: an arXiv copy with the same title
+    Returns a dict with "coverage" (see retrieve_paper) and "text"/"source"/"reason"/...
     """
     import academic_api
 
     print(f"Resolving URL: {url}")
-    
+    api_title, api_abstract = None, None
+
     # Try academic API resolution first
     try:
         api_result = academic_api.get_paper_by_academic_api(url)
+        if api_result:
+            api_title = api_result.get("title") or None
+            api_abstract = api_result.get("abstract") or None
         if api_result and api_result.get("pdf_url"):
             pdf_url = api_result["pdf_url"]
             print(f"[+] Resolved direct PDF URL via Academic API: {pdf_url}")
             print(f"Fetching content from: {pdf_url} ...")
-            response = requests.get(pdf_url, headers=HEADERS, timeout=timeout, stream=True)
-            response.raise_for_status()
-            content_type = response.headers.get("Content-Type", "").lower()
-            if "application/pdf" in content_type or pdf_url.lower().endswith(".pdf"):
+            page = _fetch(pdf_url, timeout)
+            if page["is_pdf"]:
                 print("Downloading and parsing PDF...")
-                pdf_bytes = response.content
-                text = extract_text_from_pdf(pdf_bytes)
+                text = _pdf_text(page)
                 if text.strip():
-                    return {"text": text, "source": "pdf"}
-                else:
-                    print("Warning: Extracted PDF text from Academic API was empty. Falling back to web scraper.")
+                    return {"coverage": "full", "text": text, "source": "pdf", "title": api_title}
+                print("Warning: Extracted PDF text from Academic API was empty. Falling back to web scraper.")
+            else:
+                print(f"[-] Academic API link did not return a PDF (HTTP {page['status']}). Falling back to web scraper.")
     except Exception as api_err:
         print(f"[-] Academic API resolution error/fallback: {api_err}")
 
+    outcome = _retrieve_from_site(url, timeout)
+    if outcome["coverage"] == "full":
+        outcome["title"] = _usable_title(api_title, outcome.get("title"))
+        return outcome
+
+    # The link did not give the paper. Look for an arXiv copy under the same title.
+    search_title = _usable_title(api_title, outcome.get("title"), title)
+    if search_title:
+        try:
+            match = academic_api.find_arxiv_by_title(search_title)
+            if match:
+                page = _fetch(match["pdf_url"], max(timeout, 30))
+                text = _pdf_text(page) if page["is_pdf"] else ""
+                if text.strip():
+                    return {
+                        "coverage": "full", "text": text, "source": "pdf", "title": match["title"],
+                        "note": (f"arXiv copy {match['arxiv_id']} found by title, because the linked page "
+                                 f"did not give the paper ({outcome.get('reason') or 'abstract only'})"),
+                    }
+        except Exception as e:
+            print(f"[-] arXiv title lookup failed: {e}")
+
+    if not outcome.get("abstract") and api_abstract and len(api_abstract) >= MIN_ABSTRACT_CHARS:
+        outcome["abstract"] = api_abstract
+    outcome["title"] = _usable_title(api_title, outcome.get("title"))
+    return outcome
+
+def _retrieve_from_site(url, timeout=15):
+    """
+    Fetches the paper from its own site, through the domain's URL rule if there is one.
+    Returns a dict with "coverage" and what goes with it (see classify_page).
+    """
     resolved_url = resolve_url(url, timeout)
     print(f"Resolved to: {resolved_url}")
 
@@ -345,64 +534,68 @@ def _retrieve_raw(url, timeout=15):
         domain = domain[4:]
 
     rules_schema = load_rules()
-    use_html_fallback = False
+    fetch_url = resolved_url
+    fetched = None  # the page at resolved_url, when it has already been downloaded
 
     if domain in rules_schema:
         print(f"Found existing rule for domain: {domain}")
         rules_list = rules_schema[domain].get("rules", [])
-        resolved_url, is_none = apply_rules(resolved_url, rules_list, timeout=timeout)
+        rule_url, is_none = apply_rules(resolved_url, rules_list, timeout=timeout)
         if is_none:
-            print(f"Domain {domain} is marked as HTML fallback only.")
-            use_html_fallback = True
+            # No PDF rule for this domain. The page itself is still read: it may hold an
+            # abstract, and some links on such a domain are PDFs in their own right.
+            print(f"Domain {domain} has no PDF rule. Reading the page itself.")
+        elif rule_url:
+            fetch_url = rule_url
     else:
-        # Check if original URL directly points to PDF
-        try:
-            print(f"Checking if URL directly yields PDF: {resolved_url}")
-            resp = requests.head(resolved_url, headers=HEADERS, allow_redirects=True, timeout=timeout)
-            content_type = resp.headers.get("Content-Type", "").lower()
-            if "application/pdf" in content_type or resolved_url.lower().endswith(".pdf"):
-                print(f"[+] Direct PDF detected. Saving 'direct' rule for domain: {domain}")
-                set_domain_rule(domain, [{"type": "direct"}])
-            else:
-                print(f"Direct check did not yield PDF. Fetching HTML to learn rules for {domain}...")
-                get_resp = requests.get(resolved_url, headers=HEADERS, timeout=timeout)
-                get_resp.raise_for_status()
-                html_content = get_resp.text
-
-                learned_url = learn_rules_for_domain(resolved_url, domain, html_content, timeout=timeout)
+        print(f"No rule for {domain} yet. Fetching: {resolved_url}")
+        fetched = _fetch(resolved_url, timeout)
+        if fetched["is_pdf"]:
+            print(f"[+] Direct PDF detected. Saving 'direct' rule for domain: {domain}")
+            set_domain_rule(domain, [{"type": "direct"}])
+        elif fetched["error"] is None and classify_page(fetched)["coverage"] in ("full", "abstract"):
+            print(f"Not a PDF. Learning rules for {domain}...")
+            try:
+                learned_url = learn_rules_for_domain(resolved_url, domain, fetched["html"], timeout=timeout)
                 if learned_url:
-                    resolved_url = learned_url
-                else:
-                    use_html_fallback = True
-        except Exception as e:
-            print(f"[-] Error checking or learning rules: {e}")
-            use_html_fallback = True
+                    fetch_url = learned_url
+            except Exception as e:
+                print(f"[-] Error learning rules: {e}")
+        else:
+            # A blocked or broken page says nothing about where the site keeps its PDFs,
+            # so no rule is learned from it.
+            print(f"[-] Could not read the page (HTTP {fetched['status']}); no rule learned for {domain}.")
 
-    try:
-        if not use_html_fallback:
-            print(f"Fetching content from: {resolved_url} ...")
-            response = requests.get(resolved_url, headers=HEADERS, timeout=timeout, stream=True)
-            response.raise_for_status()
+    if fetch_url != resolved_url or fetched is None:
+        print(f"Fetching content from: {fetch_url} ...")
+        page = _fetch(fetch_url, timeout)
+    else:
+        page = fetched
 
-            content_type = response.headers.get("Content-Type", "").lower()
-            if "application/pdf" in content_type or resolved_url.lower().endswith(".pdf"):
-                print("Downloading and parsing PDF...")
-                pdf_bytes = response.content
-                text = extract_text_from_pdf(pdf_bytes)
-                if text.strip():
-                    return {"text": text, "source": "pdf"}
-                else:
-                    print("Warning: Extracted PDF text is empty. Trying fallback scraper on landing page.")
-            else:
-                print("Resolved URL was not a PDF. Falling back to HTML scraping.")
+    if page["is_pdf"]:
+        print("Downloading and parsing PDF...")
+        text = _pdf_text(page)
+        if text.strip():
+            return {"coverage": "full", "text": text, "source": "pdf"}
+        print("Warning: Extracted PDF text is empty.")
+        if fetch_url == resolved_url:
+            return {"coverage": "failed", "text": "",
+                    "reason": "The PDF has no extractable text (probably scanned images)"}
 
-        print("Parsing content as HTML...")
-        response = requests.get(resolved_url, headers=HEADERS, timeout=timeout)
-        response.raise_for_status()
-        text = scrape_html_text(response.text)
-        return {"text": text, "source": "html"}
+    if fetch_url != resolved_url:
+        # The rule's link gave no PDF text. Fall back to the landing page.
+        print("Resolved URL did not give a PDF. Falling back to the landing page.")
+        page = fetched or _fetch(resolved_url, timeout)
+        if page["is_pdf"]:
+            text = _pdf_text(page)
+            if text.strip():
+                return {"coverage": "full", "text": text, "source": "pdf"}
+            return {"coverage": "failed", "text": "",
+                    "reason": "The PDF has no extractable text (probably scanned images)"}
 
-    except Exception as e:
-        print(f"Error retrieving paper text from {resolved_url}: {e}")
-        return None
-
+    print("Parsing content as HTML...")
+    outcome = classify_page(page)
+    outcome["source"] = "html" if outcome["coverage"] in ("full", "abstract") else None
+    if outcome.get("reason"):
+        print(f"[-] {outcome['reason']}: {page['url']}")
+    return outcome

@@ -24,7 +24,10 @@ def extract_links_from_html(html_content):
     # We want to extract links that represent search results
     for a in soup.find_all('a', href=True):
         href = a['href']
-        title = a.get_text(strip=True)
+        # Scholar wraps the matched keywords in <b>. The spaces around them sit in the
+        # neighbouring text, so each piece must not be stripped on its own
+        # ("Deep <b>Reinforcement Learning</b> for" came out as "DeepReinforcement Learningfor").
+        title = " ".join(a.get_text().split())
 
         parsed = urlparse(href)
 

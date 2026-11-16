@@ -290,10 +290,16 @@ def test_batch_run_triage_feeds_reviews_and_records_outcomes(tmp_path, monkeypat
     monkeypatch.setattr(services, "ensure_interests_file", lambda: "interests")
     monkeypatch.setenv("MAX_CONCURRENT_REVIEWS", "2")
 
-    def retrieve(url):
+    def retrieve(url, title=None):
         if "missing" in url:
-            return None
-        return {"text": f"text of {url} " * 50, "source": "pdf", "raw_chars": 1000, "truncated": False}
+            return {"coverage": "failed", "text": None, "source": None, "reason": None}
+        if "blocked" in url:
+            return {"coverage": "blocked", "text": None, "source": None,
+                    "reason": "Blocked by the site's bot protection (HTTP 403)"}
+        if "paywalled" in url:
+            return {"coverage": "abstract", "text": "menus", "source": "html", "abstract": "An abstract. " * 30}
+        return {"coverage": "full", "text": f"text of {url} " * 50, "source": "pdf",
+                "raw_chars": 1000, "truncated": False}
 
     calls = {"aborted": False}
 
@@ -324,6 +330,9 @@ def test_batch_run_triage_feeds_reviews_and_records_outcomes(tmp_path, monkeypat
         {"title": "An offtopic paper", "url": "https://x.org/offtopic"},
         {"title": "Missing paper", "url": "https://x.org/missing"},
         {"title": "Good paper two", "url": "https://x.org/good2"},
+        {"title": "Blocked paper", "url": "https://x.org/blocked"},
+        {"title": "A relevant paper", "url": "https://x.org/paywalled-fits"},
+        {"title": "An offtopic paper", "url": "https://x.org/paywalled-offtopic"},
     ]
     q = queue.Queue()
     services.run_paper_processing_task(run_id, papers, q)
@@ -336,8 +345,19 @@ def test_batch_run_triage_feeds_reviews_and_records_outcomes(tmp_path, monkeypat
     assert rows["flaky"].status == "success"            # retried once after the abort
     assert rows["offtopic"].status == "skipped"
     assert rows["missing"].status == "failed"
-    assert rows["missing"].skip_reason == "Could not retrieve the paper text."
-    assert run.papers_processed == 3 and run.papers_failed == 1 and run.status == "failed"
+    assert rows["missing"].skip_reason == "Could not retrieve the paper text. Upload the PDF to review it."
+    # No full text: recorded with the reason, never reviewed (no report, no ratings).
+    assert rows["blocked"].status == "failed"
+    assert rows["blocked"].skip_reason == ("Blocked by the site's bot protection (HTTP 403). "
+                                           "Upload the PDF to review it.")
+    # Abstract only: the relevance gate reads the abstract and decides failed vs skipped.
+    assert rows["paywalled-fits"].status == "failed" and rows["paywalled-fits"].report_path is None
+    assert rows["paywalled-fits"].skip_reason == ("Only the abstract is reachable (paywalled, or no PDF link "
+                                                  "found); abstract relevance 4/5. Upload the PDF to review it.")
+    assert rows["paywalled-offtopic"].status == "skipped"
+    assert rows["paywalled-offtopic"].skip_reason == "Abstract only. off topic"
+    assert rows["paywalled-offtopic"].relevance_rating == 1.0
+    assert run.papers_processed == 3 and run.papers_failed == 3 and run.status == "failed"
 
     log = []
     while not q.empty():
@@ -346,7 +366,7 @@ def test_batch_run_triage_feeds_reviews_and_records_outcomes(tmp_path, monkeypat
             log.append(item)
     log = "".join(log)
     assert "Retry 1/2" in log
-    assert "Triage finished: 3 of 5 paper(s) queued" in log
+    assert "Triage finished: 3 of 8 paper(s) queued" in log
 
 
 @pytest.mark.parametrize("framework, cache_on, expected", [

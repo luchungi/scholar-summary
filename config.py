@@ -98,6 +98,11 @@ MAX_PAPER_TOKENS = int(os.getenv("MAX_PAPER_TOKENS", "48000"))
 CHARS_PER_TOKEN = float(os.getenv("CHARS_PER_TOKEN", "3.6"))
 MAX_PAPER_CHARS = int(MAX_PAPER_TOKENS * CHARS_PER_TOKEN)
 
+# A page that is not a PDF counts as the paper itself only with at least this much text.
+# Shorter pages are landing pages (an abstract, menus): they are not reviewed, see
+# services.decide_unreviewable.
+HTML_FULLTEXT_MIN_CHARS = int(os.getenv("HTML_FULLTEXT_MIN_CHARS", "12000"))
+
 # LLM call behaviour (docs/agent/decisions/0001, 0002, 0004)
 # Local generation with thinking can exceed the openai SDK's 600s default; a timeout there
 # silently re-sent the whole request, so calls get a long timeout and no automatic retries.

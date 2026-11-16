@@ -345,6 +345,34 @@ def extract_web_page_title(url: str) -> Optional[str]:
         print(f"[-] Error auto-extracting web page title: {e}")
     return None
 
+UPLOAD_HINT = "Upload the PDF to review it."
+
+def decide_unreviewable(retrieval: Optional[Dict[str, Any]], title: str, interests: str, force: bool = False):
+    """
+    What to do with a paper whose full text could not be retrieved (blocked by the site,
+    paywalled with only an abstract reachable, or nothing at all). It is never reviewed:
+    ratings from an abstract mean nothing. If an abstract is at hand the relevance gate
+    reads it, so the Failed & Skipped tab says whether the PDF is worth fetching by hand.
+    Returns (status, reason, gate_score): status is "failed", or "skipped" when the gate
+    scores the abstract below the threshold (never when force is set).
+    """
+    if not retrieval:
+        return "failed", "Could not retrieve the paper text.", None
+    coverage = retrieval.get("coverage")
+    if coverage == "abstract":
+        base = "Only the abstract is reachable (paywalled, or no PDF link found)"
+    else:
+        base = (retrieval.get("reason") or "Could not retrieve the paper text").rstrip(".")
+
+    gate_text = retrieval.get("abstract") or (retrieval.get("text") if coverage == "abstract" else None)
+    if gate_text and config.RELEVANCE_GATE_ENABLED:
+        gate_score, gate_reason = agent.assess_relevance(title, gate_text[:3000], interests)
+        if gate_score is not None:
+            if gate_score < config.RELEVANCE_GATE_THRESHOLD and not force:
+                return "skipped", f"Abstract only. {gate_reason}".strip(), gate_score
+            return "failed", f"{base}; abstract relevance {gate_score:g}/5. {UPLOAD_HINT}", gate_score
+    return "failed", f"{base}. {UPLOAD_HINT}", None
+
 def _record_failed_paper(run_id: int, url: str, title: str, reason: Optional[str] = None):
     # reason goes in skip_reason, which the Failed & Skipped tab shows under the title.
     with _db_write_lock:
@@ -521,18 +549,27 @@ def run_paper_processing_task(
             paper_text = None
             retrieval = None
             try:
-                retrieval = paper_retriever.retrieve_paper(url)
-                paper_text = retrieval["text"] if retrieval else None
+                retrieval = paper_retriever.retrieve_paper(url, title=title)
+                if retrieval["coverage"] == "full":
+                    paper_text = retrieval["text"]
             except Exception as e:
                 print(f"[Triage: {short_label}] [-] Error retrieving paper: {e}")
 
             if not paper_text:
-                print(f"[Triage: {short_label}] [-] Could not retrieve text. Marked as failed.")
-                bump("failure")
+                # Blocked, abstract only, or nothing: recorded, never reviewed.
                 db_title = title
                 if not db_title or db_title in ("Manual URL Analysis", "Manual Input Paper", "Untitled"):
-                    db_title = extract_web_page_title(url) or "Manual Input Paper"
-                _record_failed_paper(run_id, url, db_title, reason="Could not retrieve the paper text.")
+                    db_title = ((retrieval or {}).get("title") or extract_web_page_title(url)
+                                or "Manual Input Paper")
+                status, reason, gate_score = decide_unreviewable(retrieval, db_title, current_interests, force)
+                if status == "skipped":
+                    print(f"[Triage: {short_label}] [*] Skipped on its abstract ({gate_score}/5): {reason}")
+                    bump("skipped")
+                    _record_skipped_paper(run_id, url, db_title, gate_score, reason)
+                else:
+                    print(f"[Triage: {short_label}] [-] No full text. Marked as failed: {reason}")
+                    bump("failure")
+                    _record_failed_paper(run_id, url, db_title, reason=reason[:500])
                 return
 
             # Auto-extract title if generic
@@ -566,6 +603,8 @@ def run_paper_processing_task(
             if retrieval:
                 source_label = ("PDF (downloaded and parsed)" if retrieval["source"] == "pdf"
                                 else "HTML scrape of the landing page (full PDF may not have been accessible)")
+                if retrieval.get("note"):
+                    source_label += f" - {retrieval['note']}"
                 access_info = f"Text obtained via {source_label}; {retrieval['raw_chars']} characters extracted"
                 access_info += "; middle of the paper truncated to fit the context budget." if retrieval["truncated"] else "."
             else:

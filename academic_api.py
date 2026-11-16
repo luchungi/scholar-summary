@@ -1,8 +1,11 @@
 import re
+import threading
+import time
 import urllib.parse
 import xml.etree.ElementTree as ET
+from difflib import SequenceMatcher
 import requests
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
@@ -123,6 +126,113 @@ def fetch_arxiv_by_id(arxiv_id: str) -> Optional[Dict[str, Any]]:
         }
     except Exception as e:
         print(f"[-] Error querying arXiv API: {e}")
+    return None
+
+# --- arXiv copy of a paper whose publisher page cannot be read (looked up by title) ---
+
+# arXiv asks for at most one API request every three seconds; triage fetches papers in
+# parallel, so title searches queue up behind this lock.
+ARXIV_SEARCH_MIN_INTERVAL = 3.0
+_arxiv_search_lock = threading.Lock()
+_arxiv_last_search = 0.0
+
+# How alike two titles must be, compared as lowercase letters and digits only, to count as
+# the same paper. Titles under 30 such characters must match exactly: a short title like
+# "Portfolio Optimization" is too easy to share between different papers.
+TITLE_MATCH_THRESHOLD = 0.92
+TITLE_MATCH_MIN_CHARS = 15
+TITLE_EXACT_BELOW_CHARS = 30
+
+_TITLE_STOPWORDS = {"with", "from", "using", "based", "towards", "toward", "through", "under", "into", "approach"}
+
+def normalize_title(title: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (title or "").lower())
+
+def title_similarity(a: str, b: str) -> float:
+    a, b = normalize_title(a), normalize_title(b)
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+def titles_match(a: str, b: str) -> bool:
+    shortest = min(len(normalize_title(a)), len(normalize_title(b)))
+    if shortest < TITLE_MATCH_MIN_CHARS:
+        return False
+    similarity = title_similarity(a, b)
+    return similarity == 1.0 if shortest < TITLE_EXACT_BELOW_CHARS else similarity >= TITLE_MATCH_THRESHOLD
+
+def _title_search_words(title: str) -> List[str]:
+    """
+    The words worth searching for: the six longest. A word with a capital after a lowercase
+    letter ("DeepReinforcement") is two words that an old alert title ran together, and
+    would match nothing, so it is left out.
+    """
+    words = re.findall(r"[A-Za-z][A-Za-z\-]{3,}", title or "")
+    words = [w.strip("-") for w in words if not re.search(r"[a-z][A-Z]", w)]
+    seen, unique = set(), []
+    for w in words:
+        if len(w) >= 4 and w.lower() not in seen and w.lower() not in _TITLE_STOPWORDS:
+            seen.add(w.lower())
+            unique.append(w)
+    return sorted(unique, key=len, reverse=True)[:6]
+
+def _arxiv_title_query(query: str) -> Optional[List[Dict[str, str]]]:
+    """One throttled arXiv search. Returns [{"arxiv_id", "title"}], or None if arXiv did not answer."""
+    global _arxiv_last_search
+    url = "http://export.arxiv.org/api/query?" + urllib.parse.urlencode({"search_query": query, "max_results": 10})
+    with _arxiv_search_lock:
+        wait = ARXIV_SEARCH_MIN_INTERVAL - (time.monotonic() - _arxiv_last_search)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=15)
+        except Exception as e:
+            print(f"[-] Error searching arXiv by title: {e}")
+            return None
+        finally:
+            _arxiv_last_search = time.monotonic()
+    if response.status_code != 200:
+        print(f"[Academic API] arXiv title search returned HTTP {response.status_code}.")
+        return None
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    try:
+        root = ET.fromstring(response.content)
+    except ET.ParseError:
+        return None
+    entries = []
+    for entry in root.findall("atom:entry", ns):
+        id_el, title_el = entry.find("atom:id", ns), entry.find("atom:title", ns)
+        if id_el is None or title_el is None or not id_el.text or not title_el.text:
+            continue
+        entries.append({"arxiv_id": id_el.text.rsplit("/abs/", 1)[-1], "title": " ".join(title_el.text.split())})
+    return entries
+
+def find_arxiv_by_title(title: str) -> Optional[Dict[str, Any]]:
+    """
+    Looks for an arXiv copy of a paper by its title. Used when the publisher's page is
+    blocked or paywalled. Searches for papers whose title holds all the main words, then,
+    if that finds nothing (an old alert title with words run together), any of them; a hit
+    counts only if titles_match says it is the same title.
+    Returns {"arxiv_id", "title", "pdf_url", "source": "arxiv_title"} or None.
+    """
+    words = _title_search_words(title)
+    if len(words) < 2 or len(normalize_title(title)) < TITLE_MATCH_MIN_CHARS:
+        return None
+    print(f"[Academic API] Searching arXiv for a copy titled: {title}")
+    for joiner in (" AND ", " OR "):
+        entries = _arxiv_title_query(joiner.join(f'ti:"{w}"' for w in words))
+        if entries is None:
+            return None
+        for entry in sorted(entries, key=lambda e: -title_similarity(e["title"], title)):
+            if titles_match(entry["title"], title):
+                print(f"[Academic API] Found arXiv copy {entry['arxiv_id']}: {entry['title']}")
+                return {
+                    "arxiv_id": entry["arxiv_id"],
+                    "title": entry["title"],
+                    "pdf_url": f"https://arxiv.org/pdf/{entry['arxiv_id']}",
+                    "source": "arxiv_title",
+                }
+    print("[Academic API] No arXiv copy with a matching title.")
     return None
 
 def fetch_semantic_scholar_by_doi(doi: str) -> Optional[Dict[str, Any]]:

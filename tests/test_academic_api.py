@@ -10,6 +10,7 @@ All tests here are offline: requests.get is replaced by a stub that records ever
 
 import sys
 from pathlib import Path
+from urllib.parse import unquote_plus as urllib_unquote
 
 import pytest
 
@@ -168,3 +169,100 @@ def test_ads_link_still_yields_the_arxiv_pdf_when_the_arxiv_api_is_down(web):
 def test_plain_arxiv_link_keeps_its_old_fallthrough_when_the_arxiv_api_is_down(web):
     web.routes["export.arxiv.org"] = FakeResponse(503)
     assert academic_api.get_paper_by_academic_api("https://arxiv.org/abs/2610.41855") is None
+
+
+# --- finding an arXiv copy by title ---
+
+def atom(*entries):
+    body = "".join(f"<entry><id>http://arxiv.org/abs/{i}</id><title>{t}</title></entry>" for i, t in entries)
+    return FakeResponse(200, f'<feed xmlns="http://www.w3.org/2005/Atom">{body}</feed>'.encode())
+
+
+@pytest.fixture
+def no_wait(monkeypatch):
+    monkeypatch.setattr(academic_api, "ARXIV_SEARCH_MIN_INTERVAL", 0.0)
+
+
+REPO_TITLE = "RepoReasoner: Evaluating Repository-Level Code Reasoning Ability of Long-Context Language Models"
+
+
+def test_arxiv_copy_is_found_by_title(web, no_wait):
+    web.routes["export.arxiv.org"] = atom(
+        ("2601.00001v1", "Evaluating Repository-Level Code Completion of Language Models"),
+        ("2607.25996v1", "RepoReasoner: Evaluating Repository-Level Code Reasoning\n  Ability of Long-Context Language Models"))
+
+    match = academic_api.find_arxiv_by_title(REPO_TITLE)
+
+    assert match["arxiv_id"] == "2607.25996v1"
+    assert match["pdf_url"] == "https://arxiv.org/pdf/2607.25996v1"
+    assert len(web.calls) == 1 and "+AND+" in web.calls[0]
+
+
+def test_title_with_words_run_together_still_matches(web, no_wait):
+    """Titles saved before the alert parser was fixed: the glued words are left out of the
+    search, and the comparison ignores spaces."""
+    web.routes["export.arxiv.org"] = atom(("2607.11720v1", "Active Offline-to-Online Reinforcement Learning"))
+
+    match = academic_api.find_arxiv_by_title("Active Offline-to-OnlineReinforcement Learning")
+
+    assert match["arxiv_id"] == "2607.11720v1"
+    query = urllib_unquote(web.calls[0])
+    assert "OnlineReinforcement" not in query and 'ti:"Learning"' in query
+
+
+def test_search_widens_to_any_word_when_all_words_find_nothing(web, no_wait, monkeypatch):
+    """'Learningfor' cannot be told apart from a real word, so the all-words search finds
+    nothing; the any-word search does."""
+    title = "DeepReinforcement Learningfor Adaptive Decision-Making in Markets"
+
+    def get(url, **kwargs):
+        web.calls.append(url)
+        if "+AND+" in url:
+            return atom()
+        return atom(("2609.00002v2", "Deep Reinforcement Learning for Adaptive Decision-Making in Markets"))
+    monkeypatch.setattr(academic_api.requests, "get", get)
+
+    match = academic_api.find_arxiv_by_title(title)
+
+    assert match["arxiv_id"] == "2609.00002v2"
+    assert len(web.calls) == 2 and "+OR+" in web.calls[1]
+
+
+@pytest.mark.parametrize("found_title", [
+    "RepoReasoner 2: Evaluating File-Level Code Reasoning Ability of Short-Context Language Models",
+    "A Survey of Repository-Level Code Reasoning",
+])
+def test_similar_but_different_title_is_not_a_match(web, no_wait, found_title):
+    web.routes["export.arxiv.org"] = atom(("2601.00009v1", found_title))
+    assert academic_api.find_arxiv_by_title(REPO_TITLE) is None
+
+
+def test_short_title_must_match_exactly(web, no_wait):
+    web.routes["export.arxiv.org"] = atom(("2606.17551v1", "Reversal Q-Learning"), ("2606.00003v1", "Reversed Q-Learning"))
+    assert academic_api.find_arxiv_by_title("Reversal Q-Learning")["arxiv_id"] == "2606.17551v1"
+    web.routes["export.arxiv.org"] = atom(("2606.00003v1", "Reversed Q-Learning"))
+    assert academic_api.find_arxiv_by_title("Reversal Q-Learning") is None
+
+
+@pytest.mark.parametrize("answer", [FakeResponse(429), ConnectionError("timed out"), FakeResponse(200, b"not xml")])
+def test_arxiv_not_answering_means_no_match_and_no_second_request(web, no_wait, answer):
+    web.routes["export.arxiv.org"] = answer
+    assert academic_api.find_arxiv_by_title(REPO_TITLE) is None
+    assert len(web.calls) == 1
+
+
+def test_title_too_short_to_search_makes_no_request(web, no_wait):
+    assert academic_api.find_arxiv_by_title("Untitled") is None
+    assert academic_api.find_arxiv_by_title("On AI") is None
+    assert web.calls == []
+
+
+def test_title_searches_are_spaced_out(web, monkeypatch):
+    monkeypatch.setattr(academic_api, "ARXIV_SEARCH_MIN_INTERVAL", 0.2)
+    monkeypatch.setattr(academic_api, "_arxiv_last_search", 0.0)
+    web.routes["export.arxiv.org"] = atom()
+    import time
+    start = time.monotonic()
+    academic_api.find_arxiv_by_title(REPO_TITLE)      # two requests: all words, then any word
+    assert len(web.calls) == 2
+    assert time.monotonic() - start >= 0.2
