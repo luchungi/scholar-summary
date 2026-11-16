@@ -8,6 +8,13 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
 }
 
+# NASA ADS serves its abstract pages behind a CAPTCHA, but an ADS identifier (bibcode) for
+# an arXiv record carries the arXiv ID: 2026arXiv261041855S -> 2610.41855, and the
+# pre-2015 four-digit form 2014arXiv1412.6980K -> 1412.6980.
+_ADS_ARXIV_BIBCODE = re.compile(r'(?<!\d)\d{4}arXiv(\d{4})(?:\.(\d{4})|(\d{5}))(?=[A-Za-z.]|$)')
+_ADS_URL_BIBCODE = re.compile(r'adsabs\.harvard\.edu/(?:abs|link_gateway)/([^/?#]+)', re.IGNORECASE)
+ADS_GATEWAY_URL = "https://ui.adsabs.harvard.edu/link_gateway/{bibcode}/EPRINT_PDF"
+
 def extract_arxiv_id(text: str) -> Optional[str]:
     """
     Extracts arXiv ID from a URL or text string.
@@ -15,10 +22,46 @@ def extract_arxiv_id(text: str) -> Optional[str]:
     - arxiv.org/abs/2304.12345
     - arxiv.org/pdf/2304.12345.pdf
     - 2304.12345
+    - ui.adsabs.harvard.edu/abs/2026arXiv261041855S/abstract (ADS record of an arXiv paper)
     """
+    ads = _ADS_ARXIV_BIBCODE.search(urllib.parse.unquote(text))
+    if ads:
+        return f"{ads.group(1)}.{ads.group(2) or ads.group(3)}"
     match = re.search(r'(?:arxiv\.org/(?:abs|pdf)/|arxiv:)?([a-z\-]+(?:\.[a-z\-]+)*/\d{7}|\d{4}\.\d{4,5}(?:v\d+)?)', text, re.IGNORECASE)
     if match:
         return match.group(1)
+    return None
+
+def extract_ads_bibcode(url: str) -> Optional[str]:
+    """
+    Extracts the ADS identifier from a NASA ADS URL, e.g.
+    ui.adsabs.harvard.edu/abs/2016PhRvL.116f1102A/abstract -> 2016PhRvL.116f1102A
+    """
+    match = _ADS_URL_BIBCODE.search(url or "")
+    return urllib.parse.unquote(match.group(1)) if match else None
+
+def resolve_ads_eprint_arxiv_id(url: str, timeout: int = 10) -> Optional[str]:
+    """
+    For an ADS record whose identifier is not an arXiv one (a journal paper), asks ADS's
+    link gateway where the e-print lives. The gateway answers with a plain redirect and
+    is not behind the CAPTCHA that blocks the abstract page. Returns the arXiv ID the
+    redirect points to, or None if the record has no arXiv e-print.
+    """
+    bibcode = extract_ads_bibcode(url)
+    if not bibcode:
+        return None
+    gateway = ADS_GATEWAY_URL.format(bibcode=urllib.parse.quote(bibcode, safe=""))
+    try:
+        print(f"[Academic API] Asking the ADS link gateway for the e-print of {bibcode}")
+        response = requests.get(gateway, headers=HEADERS, timeout=timeout, allow_redirects=False, stream=True)
+        response.close()
+        target = response.headers.get("Location", "") if response.status_code in (301, 302, 303, 307, 308) else ""
+        host = urllib.parse.urlparse(target).netloc.lower()
+        if host == "arxiv.org" or host.endswith(".arxiv.org"):
+            return extract_arxiv_id(target)
+        print(f"[Academic API] ADS has no arXiv e-print for {bibcode} (HTTP {response.status_code}).")
+    except Exception as e:
+        print(f"[-] Error querying the ADS link gateway: {e}")
     return None
 
 def extract_doi_from_url(url: str) -> Optional[str]:
@@ -187,17 +230,24 @@ def get_paper_by_academic_api(url: str, title: Optional[str] = None) -> Optional
     """
     Tries to retrieve paper metadata and direct PDF URL using academic APIs.
     Priority:
-    1. If arXiv url, use arXiv API
+    1. If arXiv url, or a NASA ADS url that leads to an arXiv paper, use arXiv API
     2. If DOI exists in URL, try Semantic Scholar DOI query. Fallback to Crossref.
     3. If title is provided, try Semantic Scholar Search
     """
-    # 1. Check arXiv
+    # 1. Check arXiv (directly, or through a NASA ADS link to an arXiv paper)
+    is_ads = extract_ads_bibcode(url) is not None
     arxiv_id = extract_arxiv_id(url)
+    if not arxiv_id and is_ads:
+        arxiv_id = resolve_ads_eprint_arxiv_id(url)
     if arxiv_id:
         res = fetch_arxiv_by_id(arxiv_id)
         if res:
             return res
-            
+        if is_ads:
+            # The ADS page itself is behind a CAPTCHA, so there is nothing to fall back
+            # to: hand over the arXiv PDF even when the arXiv API did not answer.
+            return {"title": "", "abstract": "", "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}", "source": "arxiv"}
+
     # 2. Check DOI
     doi = extract_doi_from_url(url)
     if doi:

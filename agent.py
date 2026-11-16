@@ -4,6 +4,7 @@ import re
 import time
 import config
 import model_settings
+from math_delimiters import normalize_math_delimiters
 
 # Dynamic aisuite Client supporting LM Studio and oMLX
 def get_client() -> ai.Client:
@@ -320,7 +321,19 @@ This section is REQUIRED and must be the last section. It contains ONLY the foll
             f"at {config.get_active_base_url()}.\nDetails: {e}\n"
             f"Please ensure {fw_name} is running and the local server is started."
         )
-    return ensure_ratings_block(report)
+    return _normalize_report_math(ensure_ratings_block(report))
+
+def _normalize_report_math(report):
+    """
+    Store every report with $ / $$ math, the only form the frontend's remark-math renders.
+    qwen3.8 writes \\( \\) and \\[ \\]; gemma writes display math as single-line $$x$$.
+    """
+    report, stats = normalize_math_delimiters(report)
+    if stats.changed:
+        print(f"Math delimiters normalised: {stats.summary()}")
+    if stats.unbalanced:
+        print(f"[-] {stats.unbalanced} unpaired \\( \\) \\[ \\] delimiter(s) left as written.")
+    return report
 
 def _log_usage(response):
     usage = getattr(response, "usage", None)
