@@ -9,8 +9,17 @@
       T-016 does not cover (rejected as 0011's primary mechanism, see its alternatives)
 - [ ] T-025 Compare gemma-4-31B 4-bit vs 8-bit review quality on 3–4 already-reviewed papers
 - [ ] T-026 Set oMLX memory_guard_tier=aggressive and cache.enabled=false (user, per 0014)
+- [ ] T-029 Restart the app, then re-run the 5 ADS papers marked failed (ids 36, 102, 189,
+      192, 416) (user; see 0016)
+- [ ] T-030 Add remark-gfm to the frontend so markdown tables in reports render as tables
+      instead of raw pipe-separated text (11 saved table rows contain math)
 
 ## Done (most recent first)
+- [x] T-028 Route NASA ADS links to arXiv: identifier decoding in extract_arxiv_id, link
+      gateway fallback; tests/test_academic_api.py (26 tests) (2026-11-16, see 0016)
+- [x] T-027 Normalise report math to $ / $$ at save: math_delimiters.py, call in
+      generate_paper_report, scripts/normalize_report_math.py, 99 reports migrated;
+      tests/test_math_delimiters.py (30 tests) (2026-11-16, see 0015)
 - [x] T-024 Benchmark run and analysed under normal conditions; final configuration in 0014 (2026-11-01)
 - [x] T-023 scripts/bench_concurrency.py: own `omlx serve`, confirmed restarts, memory sampling (2026-11-01, see 0013)
 - [x] T-022 Token usage and prefill/generation timing logged on streamed reports (2026-11-01)

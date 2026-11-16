@@ -1,8 +1,12 @@
 # Glossary
 
+- **ADS identifier (bibcode)**: the 19-character record ID in a NASA ADS URL, e.g.
+  2026arXiv261041855S. For arXiv records it embeds the arXiv ID. Not a DOI.
 - **Backend**: the FastAPI process on port 8000. Not the LLM server (LM Studio, or oMLX on
   8001) — "stop server" and "shut down backend" are different operations on different
   processes.
+- **Canonical math form**: $x$ inline and $$ fences alone on their own lines, the only form
+  the frontend renders as intended. Not \(..\) / \[..\], and not single-line $$x$$.
 - **Capacity error**: the LLM server refusing or killing a request for memory or load (oMLX
   prefill memory guard, memory-limit abort, HTTP 409/503/507, busy). Retried by the
   scheduler. Not a bad request or a network error.
