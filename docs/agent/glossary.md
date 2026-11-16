@@ -1,10 +1,14 @@
 # Glossary
 
+- **Abstract-only paper**: a paper whose link gave a landing page (an abstract, menus) and no
+  full text. Gated on the abstract, then recorded as failed or skipped; never reviewed (0018).
 - **ADS identifier (bibcode)**: the 19-character record ID in a NASA ADS URL, e.g.
   2026arXiv261041855S. For arXiv records it embeds the arXiv ID. Not a DOI.
 - **Backend**: the FastAPI process on port 8000. Not the LLM server (LM Studio, or oMLX on
   8001) — "stop server" and "shut down backend" are different operations on different
   processes.
+- **Bot-challenge page**: what a site sends instead of the paper when it suspects a script
+  ("Just a moment...", a CAPTCHA), sometimes with HTTP 200. Not paper text, and not a paywall.
 - **Canonical math form**: $x$ inline and $$ fences alone on their own lines, the only form
   the frontend renders as intended. Not \(..\) / \[..\], and not single-line $$x$$.
 - **Capacity error**: the LLM server refusing or killing a request for memory or load (oMLX
@@ -12,6 +16,8 @@
   scheduler. Not a bad request or a network error.
 - **Cool-down**: the pause after a long review (≥30k estimated tokens) before the next prefill
   starts, so oMLX's memory can settle. Not the retry delay after a capacity error.
+- **Coverage**: how much of a paper retrieve_paper got: full, abstract, blocked or failed.
+  Only full is reviewed. Not the same as source (pdf or html): a long HTML page is full.
 - **Creator guidance**: sampling values shipped with the model (hub model.yaml, else
   generation_config.json). Not LM Studio's own UI defaults, and not the user's override.
 - **Dynamic ceiling (oMLX)**: the live memory limit oMLX enforces on itself, from free and
@@ -25,6 +31,8 @@
 - **journal_ref**: arXiv's free-text "where this was published" field, e.g.
   "Phys. Rev. B 107, L180404 (2023)". Its presence means the preprint was published; it is not a
   clean journal name, so it is not a drop-in value for `%J`.
+- **"none" rule**: a domain's entry in url/rules.json saying no rule leads to its PDFs. The
+  page itself is still read (0017). Not "skip this domain", and not proof of a paywall.
 - **Normal conditions**: how batches run in practice: VS Code closed, only Safari (the app UI)
   open. Benchmarks must match this; runs from a Claude/VS Code session don't.
 - **Reference type vocabulary**: the closed set of `%0` values EndNote 21's import filter

@@ -14,3 +14,12 @@
   combined)? The benchmark's largest pair was ~37k actual tokens at a 45GB peak (9GB to spare);
   estimated +2.5GB more. Needs: watch the first real batches' logs for "Retry" or capacity
   lines; if any appear, lower REVIEW_TOKEN_BUDGET to 50000.
+
+- Q-003 (2026-11-16) Is 12,000 characters the right line between a landing page and a full
+  paper served as HTML (HTML_FULLTEXT_MIN_CHARS, 0018)? Landing pages seen so far ran
+  1.7k–8.8k characters; a paywalled page with a long reference list could pass.
+  Needs: check the Source line of the next reports that say "HTML scrape".
+
+- Q-004 (2026-11-16) Why did 20 papers that extract fine today (7 arXiv, 13 direct PDFs)
+  fail before 2026-11-01? Reasons were not stored then (T-021 added them). Leaning: the
+  report stage, not retrieval. Needs: nothing unless new failures show a pattern.

@@ -1,5 +1,18 @@
 # Dead ends
 
+## DE-008: OpenAlex and Crossref links as a source of open copies of blocked papers (2026-11-16, probe script, decision 0019)
+- Hypothesis: for a paper blocked at the publisher, OpenAlex's open-access locations or
+  Crossref's full-text links give a PDF that can be downloaded.
+- What was tried: 28 OpenAlex lookups by DOI or title and 39 Crossref lookups (DOI, and
+  ScienceDirect PII through filter=alternative-id), over the blocked failed papers.
+- Result: OpenAlex listed one copy that was not the blocked publisher page, and it was the
+  arXiv copy the arXiv title search also finds. Every Crossref PDF link returned 403.
+  OpenAlex's keyless budget ($0.10 a day, shared per IP) ran out after about 28 calls.
+- Why it failed (best guess): for these papers the only open copy is the publisher's own,
+  behind the same bot protection; OpenAlex indexes few repository copies of 2026 papers.
+- Do NOT retry unless: a free OpenAlex key is set up and blocked papers with a known
+  repository copy (not arXiv) start to appear.
+
 ## DE-007: Benchmark restarts through oMLX.app (`omlx restart`) (2026-11-01, scripts/bench_concurrency.py)
 - Hypothesis: `omlx restart` reloads ~/.omlx/settings.json between benchmark configurations.
 - What was tried: the first benchmark run called `omlx restart` and only checked that a server answered.

@@ -9,12 +9,30 @@
       T-016 does not cover (rejected as 0011's primary mechanism, see its alternatives)
 - [ ] T-025 Compare gemma-4-31B 4-bit vs 8-bit review quality on 3–4 already-reviewed papers
 - [ ] T-026 Set oMLX memory_guard_tier=aggressive and cache.enabled=false (user, per 0014)
-- [ ] T-029 Restart the app, then re-run the 5 ADS papers marked failed (ids 36, 102, 189,
-      192, 416) (user; see 0016)
-- [ ] T-030 Add remark-gfm to the frontend so markdown tables in reports render as tables
-      instead of raw pipe-separated text (11 saved table rows contain math)
+- [ ] T-029 Restart the app, then retry from the Failed tab the papers that now give full
+      text: the 5 ADS ones (ids 36, 102, 189, 192, 416; see 0016) and ids 12, 16, 20, 22, 29,
+      30, 34, 41, 68, 69, 83, 98, 107, 117, 121, 122, 156, 212, 251, 270, 275, 280, 282, 305,
+      348, 350 (user; see 0017, 0019)
+- [ ] T-035 Read <meta name="citation_pdf_url"> before asking the LLM for a PDF rule, and
+      review the existing "none" rules in url/rules.json (svedbergopen.com is OJS; see 0017)
+- [ ] T-036 One URL can hold a failed and a skipped record at once (a failed paper later
+      skipped by the gate, or the reverse); make the two exclusive
+- [ ] T-037 Look at the markdown table styling in the browser (index.css; not checked by eye)
+- [ ] T-038 extract_doi_from_url keeps Emerald's trailing article number
+      (10.1108/MBE-08-2025-0176/1385260), so Crossref finds no title or abstract
 
 ## Done (most recent first)
+- [x] T-034 Alert titles keep the spaces around Scholar's bold keywords (gmail_fetcher);
+      tests/test_gmail_fetcher.py (4 tests) (2026-11-16, see 0019)
+- [x] T-033 arXiv copy by title when the link gives no paper: find_arxiv_by_title, throttled,
+      near-exact title match; tests/test_academic_api.py (+11 tests) (2026-11-16, see 0019)
+- [x] T-032 No review without full text: coverage in retrieve_paper, bot-challenge and
+      abstract detection, decide_unreviewable in triage; 6 bad records set to failed
+      (2026-11-16, see 0018)
+- [x] T-031 Retrieval fixes: PDF recognised by content, "none" rule still reads the page, no
+      rule saved on an LLM error; tests/test_paper_retriever.py (26 tests) (2026-11-16, see 0017)
+- [x] T-030 remark-gfm 4.0.1 (single-tilde strikethrough off) in ReportDetail and InterestTab,
+      table CSS; 136 saved table rows checked, none with a pipe inside math (2026-11-16)
 - [x] T-028 Route NASA ADS links to arXiv: identifier decoding in extract_arxiv_id, link
       gateway fallback; tests/test_academic_api.py (26 tests) (2026-11-16, see 0016)
 - [x] T-027 Normalise report math to $ / $$ at save: math_delimiters.py, call in
@@ -41,12 +59,3 @@
 - [x] T-012 Implement 1-Click EndNote Batch Export with attached PDFs, local staging directory, pre-flight paywall check, and direct macOS integration (2026-10-20, see decision 0008)
 - [x] T-011 Automate EndNote citation (.enw) and PDF downloads with multi-source metadata resolution, on-demand streaming, and bulk ZIP export (2026-10-19)
 - [x] T-010 Implement batch paper reviews with hardware-aware concurrency, two-phase pipeline, and staggered prefill (2026-10-18, see decision 0006)
-- [x] T-009 Add oMLX framework support alongside LM Studio with model unloading, server stopping, and auto-start on framework switch (2026-10-16, see decision 0005)
-- [x] T-008 Backfill ratings for ArchAgent v2 (3.2/4.0) and Explainable MARL (1.0/4.5) reports with the repair call (2026-09-25, local data only)
-- [x] T-007 Check section-6 ratings compliance for qwen at temperature 1.0, thinking on and off: both compliant without repair (2026-09-25, see 0004)
-- [x] T-006 UI: thinking toggle with capability label, per-model temperature pre-filled from creator guidance, read-only top_p/top_k (2026-09-25, commit 667185a)
-- [x] T-005 Backend: read creator guidance (model.yaml → generation_config.json); per-model temperature + thinking store; .env comments (2026-09-25, commit 667185a)
-- [x] T-004 Ratings repair call when <ratings> is missing, used by all report paths (2026-09-25, commit 667185a)
-- [x] T-003 Report prompt: make ratings "### 6. Ratings", repeat it in the system prompt (2026-09-25, commit 667185a)
-- [x] T-002 Send reasoning_effort="none" on the title/relevance/repair calls; report thinking setting from .env (2026-09-25, commit 667185a)
-- [x] T-001 Set timeout≈3600s and max_retries=0 on the LM Studio client in agent.py (2026-09-25, commit 667185a)
