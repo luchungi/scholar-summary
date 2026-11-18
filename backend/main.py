@@ -26,7 +26,8 @@ from backend.services import (
     start_paper_run,
     active_logs,
     get_active_run,
-    mark_active_run_interrupted
+    mark_active_run_interrupted,
+    scan_for_downloaded_pdfs
 )
 from backend.framework_manager import FrameworkManager
 import agent
@@ -690,6 +691,17 @@ def list_failed_papers(session: Session = Depends(get_session)):
     """
     stmt = select(Paper).where(Paper.status.in_(["failed", "skipped"])).order_by(Paper.date_processed.desc())
     return session.exec(stmt).all()
+
+@app.post("/api/papers/scan-pdfs")
+def scan_pdfs():
+    """
+    Finds PDFs of failed or skipped papers in the download folder and records where they
+    are (decision 0020). The frontend then starts a forced run for the matched papers.
+    """
+    try:
+        return scan_for_downloaded_pdfs()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Delete Endpoints
 @app.delete("/api/reports/{paper_id}")

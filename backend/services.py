@@ -373,6 +373,46 @@ def decide_unreviewable(retrieval: Optional[Dict[str, Any]], title: str, interes
             return "failed", f"{base}; abstract relevance {gate_score:g}/5. {UPLOAD_HINT}", gate_score
     return "failed", f"{base}. {UPLOAD_HINT}", None
 
+def scan_for_downloaded_pdfs() -> Dict[str, Any]:
+    """
+    Looks in config.PDF_WATCH_DIR for PDFs of failed or skipped papers (decision 0020).
+    A PDF matches a paper when its first pages print the DOI in the paper's URL. Each match
+    is recorded in the user PDF index (the file is not copied or moved); the caller starts
+    the reviews. Papers whose URL has no DOI cannot match.
+    """
+    import academic_api
+    import paper_store
+
+    with Session(engine) as session:
+        stmt = (select(Paper).where(Paper.status.in_(["failed", "skipped"]))
+                .order_by(Paper.date_processed.desc()))
+        papers = session.exec(stmt).all()
+
+    by_doi: Dict[str, Paper] = {}
+    for paper in papers:
+        doi = academic_api.extract_doi_from_url(paper.url or "")
+        if doi and doi.lower() not in by_doi:
+            by_doi[doi.lower()] = paper
+
+    pdfs = paper_store.recent_pdfs(config.PDF_WATCH_DIR, config.PDF_SCAN_DAYS)
+    print(f"[*] PDF scan: {len(pdfs)} PDF(s) from the last {config.PDF_SCAN_DAYS:g} days in "
+          f"{config.PDF_WATCH_DIR}, {len(by_doi)} failed or skipped paper(s) with a DOI.")
+    matches = []
+    for doi, path in paper_store.match_pdfs(pdfs, by_doi.keys()).items():
+        paper = by_doi[doi]
+        paper_store.register(paper.url, str(path), paper.title)
+        print(f"[+] {path.name} is paper #{paper.id}: {paper.title}")
+        matches.append({"id": paper.id, "title": paper.title, "url": paper.url, "file": path.name})
+
+    active = get_active_run()
+    return {
+        "folder": config.PDF_WATCH_DIR,
+        "pdfs_checked": len(pdfs),
+        "papers_with_doi": len(by_doi),
+        "matches": matches,
+        "active_run": active.id if active else None,
+    }
+
 def _record_failed_paper(run_id: int, url: str, title: str, reason: Optional[str] = None):
     # reason goes in skip_reason, which the Failed & Skipped tab shows under the title.
     with _db_write_lock:
@@ -601,8 +641,12 @@ def run_paper_processing_task(
 
             # Factual access note computed by retriever
             if retrieval:
-                source_label = ("PDF (downloaded and parsed)" if retrieval["source"] == "pdf"
-                                else "HTML scrape of the landing page (full PDF may not have been accessible)")
+                if retrieval.get("user_pdf"):
+                    source_label = f"a PDF the user downloaded ({retrieval['user_pdf']})"
+                elif retrieval["source"] == "pdf":
+                    source_label = "PDF (downloaded and parsed)"
+                else:
+                    source_label = "HTML scrape of the landing page (full PDF may not have been accessible)"
                 if retrieval.get("note"):
                     source_label += f" - {retrieval['note']}"
                 access_info = f"Text obtained via {source_label}; {retrieval['raw_chars']} characters extracted"

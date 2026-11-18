@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { RefreshCw, Link as LinkIcon, AlertCircle, Calendar, Trash, Loader } from 'lucide-react';
+import { RefreshCw, Link as LinkIcon, AlertCircle, Calendar, Trash, Loader, FileText, FolderSearch } from 'lucide-react';
 
 interface FailedPaper {
   id: number;
@@ -11,6 +11,29 @@ interface FailedPaper {
   relevance_rating?: number | null;
 }
 
+interface ScanMatch {
+  id: number;
+  title: string;
+  url: string;
+  file: string;
+}
+
+interface ScanResult {
+  folder: string;
+  pdfs_checked: number;
+  papers_with_doi: number;
+  matches: ScanMatch[];
+  active_run: number | null;
+}
+
+// The publisher's PDF link, for sites whose bot check stops the app but not a browser
+// (decision 0020). Opened in a new tab of the user's browser, which saves it to Downloads.
+function publisherPdfLink(url: string): string | null {
+  const acm = url.match(/^https?:\/\/(?:www\.)?dl\.acm\.org\/doi\/(?:abs\/|full\/|pdf\/|epdf\/)?(10\.\d{4,9}\/[^?#\s]+)/i);
+  if (acm) return `https://dl.acm.org/doi/pdf/${acm[1]}`;
+  return null;
+}
+
 interface FailedPapersProps {
   onStartSync: (papers: { title: string; url: string; force?: string }[], emailsFetched: number) => void;
 }
@@ -19,6 +42,7 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
   const [failedPapers, setFailedPapers] = useState<FailedPaper[]>([]);
   const [loading, setLoading] = useState(true);
   const [retryingId, setRetryingId] = useState<number | null>(null);
+  const [scanning, setScanning] = useState(false);
 
   const API_URL = import.meta.env.DEV ? 'http://localhost:8000' : '';
 
@@ -53,6 +77,33 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
     }
   };
 
+  const handleScanPdfs = async () => {
+    setScanning(true);
+    try {
+      const res = await fetch(`${API_URL}/api/papers/scan-pdfs`, { method: 'POST' });
+      if (!res.ok) throw new Error(await res.text());
+      const data: ScanResult = await res.json();
+      if (data.matches.length === 0) {
+        alert(`No downloaded PDF matches a failed paper.\n\nChecked ${data.pdfs_checked} recent PDF(s) in ${data.folder} ` +
+              `against ${data.papers_with_doi} failed or skipped paper(s) that have a DOI.`);
+        return;
+      }
+      const names = data.matches.map((m) => `• ${m.file} → #${m.id} ${m.title}`).join('\n');
+      if (data.active_run !== null) {
+        alert(`Found ${data.matches.length} PDF(s):\n${names}\n\nRun ${data.active_run} is still in progress. ` +
+              `Scan again once it finishes to review them.`);
+        return;
+      }
+      // App.tsx's handleStartSync starts the run and opens the logs panel; force skips the
+      // relevance gate, as for a manual retry.
+      onStartSync(data.matches.map((m) => ({ title: m.title, url: m.url, force: 'true' })), 0);
+    } catch (e: any) {
+      alert(`Scan failed: ${e.message || e}`);
+    } finally {
+      setScanning(false);
+    }
+  };
+
   const handleDeleteFailed = async (paperId: number) => {
     if (confirm("Are you sure you want to delete this failed paper record?")) {
       try {
@@ -75,8 +126,17 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
       <div className="tab-header">
         <div className="title-desc">
           <h2>Failed & Skipped Papers</h2>
-          <p>Papers that could not be scraped or summarized (connection dropouts, paywalls, PDF errors), plus papers the relevance pre-filter skipped. Retry an extraction or force a full analysis below.</p>
+          <p>Papers that could not be scraped or summarized (connection dropouts, paywalls, PDF errors), plus papers the relevance pre-filter skipped. Retry an extraction or force a full analysis below. For a paper a site blocks, open its PDF in your browser, save it to Downloads, then scan.</p>
         </div>
+        <button
+          onClick={handleScanPdfs}
+          className="btn btn-secondary btn-sm scan-btn"
+          disabled={scanning}
+          title="Find PDFs of these papers in your Downloads folder (matched by DOI) and review them"
+        >
+          {scanning ? <Loader className="animate-spin" size={14} /> : <FolderSearch size={14} />}
+          Scan Downloads for PDFs
+        </button>
       </div>
 
       <div className="failed-list-container scroller">
@@ -127,6 +187,19 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
                     <Calendar size={14} />
                     <span>{new Date(paper.date_processed).toLocaleDateString()}</span>
                   </div>
+                  <div className="footer-actions">
+                  {publisherPdfLink(paper.url) && (
+                    <a
+                      href={publisherPdfLink(paper.url)!}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn btn-secondary btn-xs open-pdf-btn"
+                      title="Open the PDF in your browser and save it to Downloads, then scan"
+                    >
+                      <FileText size={12} />
+                      Open PDF
+                    </a>
+                  )}
                   <button
                     onClick={() => handleRetry(paper)}
                     className="btn btn-secondary btn-xs retry-btn"
@@ -139,6 +212,7 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
                     )}
                     {paper.status === 'skipped' ? 'Analyze Anyway' : 'Retry Extraction'}
                   </button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -153,6 +227,41 @@ export default function FailedPapers({ onStartSync }: FailedPapersProps) {
           gap: 20px;
           height: 100%;
           overflow: hidden;
+        }
+        .failed-papers-tab .tab-header {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 16px;
+          flex-wrap: wrap;
+        }
+        .scan-btn {
+          gap: 6px;
+          white-space: nowrap;
+          font-size: 13px;
+          padding: 8px 14px;
+        }
+        .failed-card .btn-xs {
+          font-size: 12px;
+          padding: 6px 12px;
+        }
+        .footer-actions {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .open-pdf-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          text-decoration: none;
+          color: var(--text-main);
+          font-family: var(--font-display);
+          font-weight: 500;
+        }
+        .open-pdf-btn:hover {
+          border-color: var(--accent-blue) !important;
+          color: #fff;
         }
         .tab-header h2 {
           font-size: 22px;

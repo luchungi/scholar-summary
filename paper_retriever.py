@@ -420,6 +420,7 @@ def retrieve_paper(url, timeout=15, title=None):
       "title":     a clean title from the page or an API, when found
       "reason":    why there is no full text (for the Failed & Skipped tab)
       "note":      set when the text came from somewhere other than the link (arXiv copy)
+      "user_pdf":  file name of the user's downloaded PDF, when the text came from it
     title: the paper's title if known; used to look for an arXiv copy when the link fails.
     """
     raw = _retrieve_raw(url, timeout, title)
@@ -433,6 +434,7 @@ def retrieve_paper(url, timeout=15, title=None):
         "title": raw.get("title"),
         "reason": raw.get("reason"),
         "note": raw.get("note"),
+        "user_pdf": raw.get("user_pdf"),
     }
     if raw["coverage"] == "full":
         result["text"], result["truncated"] = prepare_paper_text(raw["text"])
@@ -467,6 +469,20 @@ def _retrieve_raw(url, timeout=15, title=None):
     Returns a dict with "coverage" (see retrieve_paper) and "text"/"source"/"reason"/...
     """
     import academic_api
+    import paper_store
+
+    # A PDF the user downloaded for this paper comes first (decision 0020).
+    user_pdf = paper_store.pdf_for(url)
+    if user_pdf:
+        print(f"[+] Using the PDF the user downloaded: {user_pdf}")
+        try:
+            text = extract_text_from_pdf(Path(user_pdf).read_bytes())
+        except Exception as e:
+            print(f"[-] Could not read {user_pdf}: {e}")
+            text = ""
+        if text.strip():
+            return {"coverage": "full", "text": text, "source": "pdf", "user_pdf": Path(user_pdf).name}
+        print("[-] The user's PDF has no extractable text. Trying the link.")
 
     print(f"Resolving URL: {url}")
     api_title, api_abstract = None, None

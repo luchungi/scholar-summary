@@ -7,6 +7,7 @@ import requests
 
 import academic_api
 import paper_retriever
+import paper_store
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
@@ -19,6 +20,11 @@ def resolve_pdf_url(url: str, title: Optional[str] = None, timeout: int = 10) ->
     """
     if not url:
         return None
+
+    # A PDF the user downloaded for this paper (decision 0020)
+    user_pdf = paper_store.pdf_for(url)
+    if user_pdf:
+        return f"file://{user_pdf}"
 
     # Handle local uploaded files
     if url.startswith("file://"):

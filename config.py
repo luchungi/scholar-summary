@@ -174,6 +174,12 @@ TRIAGE_CONCURRENCY = int(os.getenv("TRIAGE_CONCURRENCY", "4"))
 REPORTS_DIR = os.getenv("REPORTS_DIR", "reports")
 FAILED_PAPERS_FILE = os.getenv("FAILED_PAPERS_FILE", "failed_papers.md")
 
+# PDFs the user downloaded for failed papers (decision 0020). The app keeps only their
+# paths, in USER_PDF_INDEX; the files stay where they are.
+PDF_WATCH_DIR = os.path.expanduser(os.getenv("PDF_WATCH_DIR", "~/Downloads"))
+PDF_SCAN_DAYS = float(os.getenv("PDF_SCAN_DAYS", "7"))
+USER_PDF_INDEX = os.getenv("USER_PDF_INDEX", os.path.join(REPORTS_DIR, "user_pdfs.json"))
+
 def validate_config():
     """Validates configuration. Returns True if valid, raises ValueError if missing credentials."""
     credentials_file = Path(GMAIL_CREDENTIALS_PATH)
