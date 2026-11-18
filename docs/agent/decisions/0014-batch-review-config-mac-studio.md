@@ -1,6 +1,6 @@
 # 0014: Batch review configuration on the Mac Studio (gemma-4-31B 8-bit, oMLX)
 
-- Status: Accepted
+- Status: Superseded by 0021
 - Date: 2026-11-01
 - Context: Benchmark 2026-11-01 (0013), 6 papers of 12–38k tokens, normal conditions. All
   runs 6/6 papers with 0 retries:

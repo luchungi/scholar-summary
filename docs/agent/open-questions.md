@@ -10,11 +10,6 @@
   `lms unload --all`. If it goes blind, teardown should stop the server after unloading
   only, and never the reverse order.
 
-- Q-002 (2026-11-01) Is the 60k budget safe for the largest pairs it allows (~52k actual tokens
-  combined)? The benchmark's largest pair was ~37k actual tokens at a 45GB peak (9GB to spare);
-  estimated +2.5GB more. Needs: watch the first real batches' logs for "Retry" or capacity
-  lines; if any appear, lower REVIEW_TOKEN_BUDGET to 50000.
-
 - Q-003 (2026-11-16) Is 12,000 characters the right line between a landing page and a full
   paper served as HTML (HTML_FULLTEXT_MIN_CHARS, 0018)? Landing pages seen so far ran
   1.7k–8.8k characters; a paywalled page with a long reference list could pass.

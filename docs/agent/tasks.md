@@ -8,7 +8,6 @@
 - [ ] T-017 Reconcile stale "running" run rows on startup, for the crash and ctrl-C paths
       T-016 does not cover (rejected as 0011's primary mechanism, see its alternatives)
 - [ ] T-025 Compare gemma-4-31B 4-bit vs 8-bit review quality on 3–4 already-reviewed papers
-- [ ] T-026 Set oMLX memory_guard_tier=aggressive and cache.enabled=false (user, per 0014)
 - [ ] T-029 Restart the app, then retry from the Failed tab the papers that now give full
       text: the 5 ADS ones (ids 36, 102, 189, 192, 416; see 0016) and ids 12, 16, 20, 22, 29,
       30, 34, 41, 68, 69, 83, 98, 107, 117, 121, 122, 156, 212, 251, 270, 275, 280, 282, 305,
@@ -25,8 +24,16 @@
 - [ ] T-041 Check the Failed tab's "Scan Downloads for PDFs" and "Open PDF" buttons in the
       browser, and change UPLOAD_HINT to point at the scan (see 0020)
 - [ ] T-042 Download and scan ACM papers 423–426 (user; see 0020)
+- [ ] T-043 Turn oMLX's prompt cache back on (cache.enabled); the app's requests skip
+      storing (user; see 0021)
+- [ ] T-044 Watch the first 2-3 batches at N=4 for "Retry"/capacity lines and oMLX's peak;
+      on any capacity retry, drop to N=3 with REVIEW_TOKEN_BUDGET=105000 (see 0021)
 
 ## Done (most recent first)
+- [x] T-045 Thinking-aware output reserve (15k), pause on prompt estimate, X-oMLX-Cache-Store
+      header with oMLX version check, `probe` subcommand; 202 tests (2026-11-18, commit 3f2009e, see 0021)
+- [x] T-026 oMLX memory_guard_tier=aggressive and cache.enabled=false set (confirmed from the
+      settings backup 2026-11-18; followed by T-043, see 0021)
 - [x] T-039 Scan Downloads for PDFs of failed papers, matched by DOI; paper_store, Open PDF
       link for ACM; tests/test_paper_store.py (8 tests); #427 reviewed live (2026-11-18, see 0020)
 - [x] T-034 Alert titles keep the spaces around Scholar's bold keywords (gmail_fetcher);

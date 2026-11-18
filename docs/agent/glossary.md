@@ -14,8 +14,9 @@
 - **Capacity error**: the LLM server refusing or killing a request for memory or load (oMLX
   prefill memory guard, memory-limit abort, HTTP 409/503/507, busy). Retried by the
   scheduler. Not a bad request or a network error.
-- **Cool-down**: the pause after a long review (≥30k estimated tokens) before the next prefill
-  starts, so oMLX's memory can settle. Not the retry delay after a capacity error.
+- **Cool-down**: the pause after a review whose estimated prompt (output reserve excluded) is
+  ≥30k tokens, before the next prefill starts, so oMLX's memory can settle (0021). Not the
+  retry delay after a capacity error.
 - **Coverage**: how much of a paper retrieve_paper got: full, abstract, blocked or failed.
   Only full is reviewed. Not the same as source (pdf or html): a long HTML page is full.
 - **Creator guidance**: sampling values shipped with the model (hub model.yaml, else
@@ -35,6 +36,11 @@
   page itself is still read (0017). Not "skip this domain", and not proof of a paywall.
 - **Normal conditions**: how batches run in practice: VS Code closed, only Safari (the app UI)
   open. Benchmarks must match this; runs from a Claude/VS Code session don't.
+- **Output reserve**: the output tokens the token budget counts per review (15k with thinking
+  on, 2k off), added to the prompt estimate. Bookkeeping only; it does not limit generation.
+- **Prompt cache (oMLX)**: oMLX's store of computed keys and values (KV cache) for prompt
+  prefixes, in memory and on SSD, reused by a later request with the same start. Not the
+  generated text. Skipped per request with X-oMLX-Cache-Store: off (0021).
 - **Reference type vocabulary**: the closed set of `%0` values EndNote 21's import filter
   recognises, snapshotted in url/reference_rules.json. Not a free-text label — an unrecognised
   value is silently defaulted by EndNote, not rejected.
