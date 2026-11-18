@@ -208,6 +208,17 @@ class OMLXBackend:
             return {"status": "error", "detail": str(e)}
 
     @staticmethod
+    def get_version() -> Optional[str]:
+        """oMLX's version from /api/status, or None if the server can't be asked."""
+        base = re.sub(r"/v1$", "", OMLXBackend._base_url())
+        req = urllib.request.Request(f"{base}/api/status", headers=OMLXBackend._headers(), method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read().decode("utf-8")).get("version")
+        except Exception:
+            return None
+
+    @staticmethod
     def get_loaded_model() -> Optional[str]:
         url = f"{OMLXBackend._base_url()}/models/status"
         req = urllib.request.Request(url, headers=OMLXBackend._headers(), method="GET")

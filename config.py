@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -44,6 +45,21 @@ def get_omlx_cache_enabled():
         return bool(data.get("cache", {}).get("enabled", True))
     except Exception:
         return None
+
+# Sent on every app request to oMLX: keeps the request out of oMLX's prompt cache, so the
+# cache can stay on for other uses without its 12-20 GB save spike after each review.
+# oMLX reads it from 0.7.3; older versions ignore it (decision 0021).
+OMLX_CACHE_STORE_HEADERS = {"X-oMLX-Cache-Store": "off"}
+OMLX_CACHE_STORE_HEADER_MIN_VERSION = (0, 7, 3)
+
+def version_at_least(version, minimum) -> bool:
+    """True if a dotted version string such as '0.7.3' is >= the minimum tuple."""
+    if not version:
+        return False
+    parts = [int(x) for x in re.findall(r"\d+", str(version))[:len(minimum)]]
+    if not parts:
+        return False
+    return tuple(parts + [0] * (len(minimum) - len(parts))) >= tuple(minimum)
 
 OMLX_BASE_URL = os.getenv("OMLX_BASE_URL", "http://localhost:8001/v1")
 OMLX_MODEL = os.getenv("OMLX_MODEL", "openai:")
@@ -158,8 +174,12 @@ def get_max_concurrent_reviews() -> int:
 # stay within this budget; a paper over budget on its own runs alone (0012.2).
 REVIEW_TOKEN_BUDGET = int(os.getenv("REVIEW_TOKEN_BUDGET", "40000"))
 REVIEW_OUTPUT_RESERVE_TOKENS = int(os.getenv("REVIEW_OUTPUT_RESERVE_TOKENS", "2000"))
+# With thinking on, reviews write 9-13k tokens (Qwen3.8-27B, 2026-11-18), so the budget
+# counts this many output tokens per review instead. It never limits generation.
+REVIEW_OUTPUT_RESERVE_TOKENS_THINKING = int(os.getenv("REVIEW_OUTPUT_RESERVE_TOKENS_THINKING", "15000"))
 # oMLX holds 12-20 GB above the model for ~45-60s after a long review ends, and rejects
-# or unloads on a prompt sent in that window: pause dispatch after reviews this long.
+# or unloads on a prompt sent in that window: pause dispatch after reviews whose
+# estimated prompt (output reserve excluded) is this long.
 REVIEW_COOLDOWN_TOKENS = int(os.getenv("REVIEW_COOLDOWN_TOKENS", "30000"))
 REVIEW_COOLDOWN_SECONDS = float(os.getenv("REVIEW_COOLDOWN_SECONDS", "60"))
 # The spike comes from oMLX saving the prompt cache to SSD and takes 45-60s to settle;

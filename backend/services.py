@@ -15,7 +15,8 @@ from urllib.parse import urlparse
 from sqlmodel import Session, select
 from backend.models import Run, Paper, EmailAlert
 from backend.database import engine
-from backend.review_scheduler import ReviewScheduler, estimate_review_tokens, is_capacity_abort
+from backend.review_scheduler import (ReviewScheduler, estimate_prompt_tokens, is_capacity_abort,
+                                      review_output_reserve_tokens)
 import re
 
 def extract_ratings(content: str):
@@ -475,15 +476,23 @@ def _record_success_paper(run_id: int, url: str, title: str, report_path: str, q
 
 def review_cooldown_seconds() -> float:
     """
-    Cool-down after long reviews (decision 0014). 30s is enough with oMLX's prompt cache
-    off; with it on, oMLX's SSD cache save holds 12-20 GB for 45-60s, so use the longer
-    value and warn, since the cache is a global oMLX setting the app does not change.
+    Cool-down after long reviews (decisions 0014, 0021). The configured value applies with
+    oMLX's prompt cache off, or on with oMLX >= 0.7.3, which honours the app's
+    X-oMLX-Cache-Store: off header. Older or unreachable oMLX with the cache on saves every
+    prompt to SSD with a 12-20 GB spike for 45-60s, so use the longer value and warn.
     """
     seconds = config.REVIEW_COOLDOWN_SECONDS
     if config.get_active_framework() == "omlx" and config.get_omlx_cache_enabled():
+        from backend.framework_manager import OMLXBackend
+        version = OMLXBackend.get_version()
+        if config.version_at_least(version, config.OMLX_CACHE_STORE_HEADER_MIN_VERSION):
+            # The app's requests carry X-oMLX-Cache-Store: off, so nothing is saved (0021).
+            print(f"[+] oMLX {version}: prompt cache on, but the app's requests skip saving to it.")
+            return seconds
         print(f"[!] oMLX's prompt cache is on (~/.omlx/settings.json cache.enabled). It saves every "
               f"review's prompt to SSD with a 12-20 GB memory spike and is never reused here; "
-              f"turn it off for batch runs. Using a {max(seconds, config.REVIEW_COOLDOWN_SECONDS_CACHE_ON):.0f}s "
+              f"oMLX {version or '(version unknown)'} ignores the app's request to skip it. Update oMLX to "
+              f"0.7.3 or later, or turn the cache off for batch runs. Using a {max(seconds, config.REVIEW_COOLDOWN_SECONDS_CACHE_ON):.0f}s "
               f"cool-down after long reviews meanwhile.")
         seconds = max(seconds, config.REVIEW_COOLDOWN_SECONDS_CACHE_ON)
     return seconds
@@ -519,8 +528,11 @@ def run_paper_processing_task(
             current_interests = ""
 
         max_concurrency = config.get_max_concurrent_reviews()
+        # Output tokens the budget counts per review: larger with thinking on (decision 0021).
+        output_reserve = review_output_reserve_tokens()
         print(f"[+] Review scheduling: up to {max_concurrency} review(s) at once within a "
-              f"{config.REVIEW_TOKEN_BUDGET}-token budget (detected RAM: {config.get_system_ram_gb():.1f} GB); "
+              f"{config.REVIEW_TOKEN_BUDGET}-token budget, counting {output_reserve} output tokens per review "
+              f"(detected RAM: {config.get_system_ram_gb():.1f} GB); "
               f"triage runs {config.TRIAGE_CONCURRENCY} paper(s) at a time.")
 
         # =========================================================================
@@ -654,11 +666,13 @@ def run_paper_processing_task(
             else:
                 access_info = None
 
-            tokens = estimate_review_tokens(paper_text, current_interests)
+            prompt_tokens = estimate_prompt_tokens(paper_text, current_interests)
+            tokens = prompt_tokens + output_reserve
             scheduler.submit(
                 {"title": title, "url": url, "paper_text": paper_text, "access_info": access_info},
                 tokens,
                 label=title[:30] + "..." if len(title) > 30 else title,
+                prompt_tokens=prompt_tokens,
             )
             bump("queued")
             print(f"[Triage: {short_label}] [+] Queued for full review (~{tokens} tokens).")

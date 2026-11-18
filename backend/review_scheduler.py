@@ -50,11 +50,31 @@ CAPACITY_STATUS_RE = re.compile(r"error code:\s*(409|503|507)\b")
 MAX_ABORT_RETRIES = 2
 
 
-def estimate_review_tokens(paper_text: str, user_interests: str = "") -> int:
-    """Estimated context tokens of one review: prompt plus the output reserve."""
+def estimate_prompt_tokens(paper_text: str, user_interests: str = "") -> int:
+    """Estimated prompt tokens of one review: paper, interests and instructions."""
     prompt_chars = len(paper_text or "") + len(user_interests or "")
-    return (int(prompt_chars / config.CHARS_PER_TOKEN) + PROMPT_OVERHEAD_TOKENS
-            + config.REVIEW_OUTPUT_RESERVE_TOKENS)
+    return int(prompt_chars / config.CHARS_PER_TOKEN) + PROMPT_OVERHEAD_TOKENS
+
+
+def review_output_reserve_tokens(thinking: Optional[bool] = None) -> int:
+    """
+    Output tokens the budget counts per review. Bookkeeping only: it never limits
+    generation. thinking=None resolves the active model's report setting.
+    """
+    if thinking is None:
+        try:
+            import model_settings
+            thinking = bool(model_settings.resolve_report_settings(config.get_active_model())["thinking"])
+        except Exception:
+            thinking = True     # unknown: count the larger reserve
+    return (config.REVIEW_OUTPUT_RESERVE_TOKENS_THINKING if thinking
+            else config.REVIEW_OUTPUT_RESERVE_TOKENS)
+
+
+def estimate_review_tokens(paper_text: str, user_interests: str = "",
+                           thinking: Optional[bool] = None) -> int:
+    """Estimated context tokens of one review: prompt plus the output reserve."""
+    return estimate_prompt_tokens(paper_text, user_interests) + review_output_reserve_tokens(thinking)
 
 
 def is_capacity_abort(err: BaseException) -> bool:
@@ -63,11 +83,13 @@ def is_capacity_abort(err: BaseException) -> bool:
 
 
 class _Entry:
-    __slots__ = ("item", "tokens", "label", "retries", "key", "overlapped")
+    __slots__ = ("item", "tokens", "prompt_tokens", "label", "retries", "key", "overlapped")
 
-    def __init__(self, item: Any, tokens: int, label: str, seq: int):
+    def __init__(self, item: Any, tokens: int, label: str, seq: int, prompt_tokens: Optional[int] = None):
         self.item = item
         self.tokens = tokens
+        # The pause after a long review compares the prompt alone (decision 0021).
+        self.prompt_tokens = tokens if prompt_tokens is None else prompt_tokens
         self.label = label
         self.retries = 0
         # Set when another review ran alongside the current attempt.
@@ -126,12 +148,16 @@ class ReviewScheduler:
         self.abort_retries = 0
         self.peak_concurrency = 0
 
-    def submit(self, item: Any, tokens: int, label: str = "") -> None:
-        """Queue a paper for review. Thread-safe; may be called while run() is going."""
+    def submit(self, item: Any, tokens: int, label: str = "", prompt_tokens: Optional[int] = None) -> None:
+        """
+        Queue a paper for review. Thread-safe; may be called while run() is going.
+        tokens (prompt + output reserve) counts against the budget; prompt_tokens, if
+        given, decides the pause after the review (else tokens does).
+        """
         with self._cond:
             if self._closed:
                 raise RuntimeError("ReviewScheduler.submit() after close()")
-            entry = _Entry(item, tokens, label, next(self._seq))
+            entry = _Entry(item, tokens, label, next(self._seq), prompt_tokens)
             self._insert(entry)
             self._cond.notify_all()
 
@@ -237,7 +263,7 @@ class ReviewScheduler:
                         self._on_done(entry.item, tag, result, error)
                     except Exception as e:
                         self._log(f"{tag} [-] Error recording review outcome: {e}")
-                if entry.tokens >= self._cooldown_tokens and not retry:
+                if entry.prompt_tokens >= self._cooldown_tokens and not retry:
                     self._log(f"{tag} [*] Long review finished; waiting {self._cooldown_seconds:.0f}s "
                               f"for the LLM server's memory to settle before the next prefill.")
         finally:
@@ -246,7 +272,7 @@ class ReviewScheduler:
                 self._in_flight_tokens -= entry.tokens
                 self._running.discard(entry)
                 bisect.insort(self._free_slots, slot)
-                if entry.tokens >= self._cooldown_tokens:
+                if entry.prompt_tokens >= self._cooldown_tokens:
                     self._pause(self._cooldown_seconds)
                 if retry:
                     entry.retries += 1

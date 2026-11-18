@@ -18,7 +18,8 @@ sys.path.insert(0, str(ROOT))
 
 import config
 import paper_retriever
-from backend.review_scheduler import ReviewScheduler, estimate_review_tokens, is_capacity_abort
+from backend.review_scheduler import (ReviewScheduler, estimate_prompt_tokens, estimate_review_tokens,
+                                      is_capacity_abort, review_output_reserve_tokens)
 
 
 class Recorder:
@@ -245,8 +246,73 @@ def test_is_capacity_abort(msg, expected):
 
 def test_estimate_review_tokens_includes_overhead_and_reserve():
     text = "x" * int(10_000 * config.CHARS_PER_TOKEN)
-    est = estimate_review_tokens(text)
+    est = estimate_review_tokens(text, thinking=False)
     assert est > 10_000 + config.REVIEW_OUTPUT_RESERVE_TOKENS
+
+
+def test_output_reserve_follows_thinking(monkeypatch):
+    """Decision 0021: thinking reviews write ~10k tokens, so the budget counts 15k."""
+    monkeypatch.setattr(config, "REVIEW_OUTPUT_RESERVE_TOKENS", 2_000)
+    monkeypatch.setattr(config, "REVIEW_OUTPUT_RESERVE_TOKENS_THINKING", 15_000)
+    text = "x" * int(10_000 * config.CHARS_PER_TOKEN)
+    prompt = estimate_prompt_tokens(text)
+    assert estimate_review_tokens(text, thinking=True) == prompt + 15_000
+    assert estimate_review_tokens(text, thinking=False) == prompt + 2_000
+
+
+def test_output_reserve_resolves_active_model_thinking(monkeypatch):
+    import model_settings
+    monkeypatch.setattr(config, "REVIEW_OUTPUT_RESERVE_TOKENS", 2_000)
+    monkeypatch.setattr(config, "REVIEW_OUTPUT_RESERVE_TOKENS_THINKING", 15_000)
+    monkeypatch.setattr(model_settings, "resolve_report_settings", lambda m: {"thinking": True})
+    assert review_output_reserve_tokens() == 15_000
+    monkeypatch.setattr(model_settings, "resolve_report_settings", lambda m: {"thinking": False})
+    assert review_output_reserve_tokens() == 2_000
+
+    def broken(m):
+        raise RuntimeError("no settings")
+    monkeypatch.setattr(model_settings, "resolve_report_settings", broken)
+    assert review_output_reserve_tokens() == 15_000     # unknown: the larger reserve
+
+
+def test_cooldown_ignores_output_reserve():
+    """A short prompt with a big reserve must not pause dispatch (decision 0021)."""
+    starts, ends = {}, {}
+
+    def review(item, tag, on_first_token):
+        starts[item] = time.monotonic()
+        on_first_token()
+        time.sleep(0.05)
+        return item
+
+    sched = ReviewScheduler(review, lambda item, *a: ends.setdefault(item, time.monotonic()),
+                            1, 100_000, log=lambda s: None,
+                            cooldown_tokens=30_000, cooldown_seconds=0.5, retry_delay_seconds=0)
+    sched.submit("a", 33_000, "a", prompt_tokens=18_000)     # 18k prompt + 15k reserve
+    sched.submit("b", 32_000, "b", prompt_tokens=17_000)
+    sched.close()
+    sched.run()
+    first, second = sorted(starts, key=starts.get)
+    assert starts[second] - ends[first] < 0.3
+
+
+def test_cooldown_on_long_prompt_with_reserve():
+    starts, ends = {}, {}
+
+    def review(item, tag, on_first_token):
+        starts[item] = time.monotonic()
+        on_first_token()
+        time.sleep(0.05)
+        return item
+
+    sched = ReviewScheduler(review, lambda item, *a: ends.setdefault(item, time.monotonic()),
+                            1, 100_000, log=lambda s: None,
+                            cooldown_tokens=30_000, cooldown_seconds=0.5, retry_delay_seconds=0)
+    sched.submit("long", 53_000, "long", prompt_tokens=38_000)
+    sched.submit("short", 30_000, "short", prompt_tokens=15_000)
+    sched.close()
+    sched.run()
+    assert starts["short"] - ends["long"] >= 0.45
 
 
 def test_parallel_rule_writes_keep_every_domain(tmp_path, monkeypatch):
@@ -369,16 +435,44 @@ def test_batch_run_triage_feeds_reviews_and_records_outcomes(tmp_path, monkeypat
     assert "Triage finished: 3 of 8 paper(s) queued" in log
 
 
-@pytest.mark.parametrize("framework, cache_on, expected", [
-    ("omlx", False, 30.0),
-    ("omlx", True, 60.0),
-    ("omlx", None, 30.0),        # settings unreadable: no warning, configured value
-    ("lmstudio", True, 30.0),
+@pytest.mark.parametrize("framework, cache_on, version, expected", [
+    ("omlx", False, "0.7.3", 30.0),
+    ("omlx", True, "0.7.2", 60.0),     # cache on, header not understood
+    ("omlx", True, None, 60.0),        # cache on, version unknown
+    ("omlx", True, "0.7.3", 30.0),     # cache on, app requests skip the store (0021)
+    ("omlx", True, "0.10.0", 30.0),
+    ("omlx", None, None, 30.0),        # settings unreadable: no warning, configured value
+    ("lmstudio", True, None, 30.0),
 ])
-def test_review_cooldown_depends_on_omlx_cache(monkeypatch, framework, cache_on, expected):
+def test_review_cooldown_depends_on_omlx_cache(monkeypatch, framework, cache_on, version, expected):
     import backend.services as services
+    from backend.framework_manager import OMLXBackend
     monkeypatch.setattr(config, "REVIEW_COOLDOWN_SECONDS", 30.0)
     monkeypatch.setattr(config, "REVIEW_COOLDOWN_SECONDS_CACHE_ON", 60.0)
     monkeypatch.setattr(config, "get_active_framework", lambda: framework)
     monkeypatch.setattr(config, "get_omlx_cache_enabled", lambda: cache_on)
+    monkeypatch.setattr(OMLXBackend, "get_version", staticmethod(lambda: version))
     assert services.review_cooldown_seconds() == expected
+
+
+@pytest.mark.parametrize("version, expected", [
+    ("0.7.3", True), ("0.7.10", True), ("1.0", True), ("1.0.0", True), ("0.7.2", False),
+    ("v0.8.0rc1", True), (None, False), ("", False), ("garbage", False),
+])
+def test_version_at_least(version, expected):
+    assert config.version_at_least(version, (0, 7, 3)) is expected
+
+
+@pytest.mark.parametrize("framework, has_header", [("omlx", True), ("lmstudio", False)])
+def test_llm_client_skips_omlx_cache_store(monkeypatch, framework, has_header):
+    import agent
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, provider_configs):
+            seen.update(provider_configs["openai"])
+
+    monkeypatch.setattr(config, "get_active_framework", lambda: framework)
+    monkeypatch.setattr(agent.ai, "Client", FakeClient)
+    agent.get_client()
+    assert (seen.get("default_headers") == {"X-oMLX-Cache-Store": "off"}) is has_header

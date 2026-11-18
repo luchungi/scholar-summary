@@ -16,7 +16,10 @@ def get_client() -> ai.Client:
                 # openai SDK defaults (600s timeout, 2 retries) silently re-send long local
                 # generations; see docs/agent/decisions/0001.
                 "timeout": config.LLM_TIMEOUT_SECONDS,
-                "max_retries": 0
+                "max_retries": 0,
+                # oMLX: keep the app's one-shot prompts out of its prompt cache (0021).
+                **({"default_headers": config.OMLX_CACHE_STORE_HEADERS}
+                   if config.get_active_framework() == "omlx" else {}),
             }
         }
     )
@@ -164,16 +167,11 @@ Opening text of the paper:
         print(f"[-] Error during relevance pre-check (paper will be analyzed anyway): {e}")
         return None, ""
 
-def generate_paper_report(paper_title, paper_url, paper_text, user_interests, access_info=None, on_first_token=None):
+def build_report_messages(paper_title, paper_url, paper_text, user_interests, access_info=None):
     """
-    Prompts the local LLM to analyze the paper and generate a report.
-    access_info: optional factual note (computed by the retriever) about how the text
-    was obtained (PDF vs HTML scrape, char count, truncation), passed as fact to the model.
-    on_first_token: optional callback invoked immediately when prompt prefill finishes
-    and the first token (or reasoning token) is emitted.
+    The system and user messages of a full paper review. Also sent as-is by
+    scripts/bench_concurrency.py probe, so the benchmark measures the real prompt.
     """
-    print(f"Generating report using model: {config.get_active_model()}...")
-
     system_prompt = (
         "You are a skeptical peer reviewer with expertise in quantitative finance, stochastic analysis, "
         "machine learning, and reinforcement learning. You read academic papers critically: you do not "
@@ -238,6 +236,22 @@ Explain how the paper fits into the wider academic literature, its core contribu
 This section is REQUIRED and must be the last section. It contains ONLY the following block, with float scores (e.g. 4.0, 3.5) consistent with sections 2 and 3 and short (1-2 sentence) justifications:
 {RATINGS_BLOCK_TEMPLATE}
 """
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def generate_paper_report(paper_title, paper_url, paper_text, user_interests, access_info=None, on_first_token=None):
+    """
+    Prompts the local LLM to analyze the paper and generate a report.
+    access_info: optional factual note (computed by the retriever) about how the text
+    was obtained (PDF vs HTML scrape, char count, truncation), passed as fact to the model.
+    on_first_token: optional callback invoked immediately when prompt prefill finishes
+    and the first token (or reasoning token) is emitted.
+    """
+    print(f"Generating report using model: {config.get_active_model()}...")
+    messages = build_report_messages(paper_title, paper_url, paper_text, user_interests, access_info)
 
     settings = model_settings.resolve_report_settings(config.get_active_model())
     print(
@@ -260,10 +274,7 @@ This section is REQUIRED and must be the last section. It contains ONLY the foll
             try:
                 stream_resp = get_client().chat.completions.create(
                     model=config.get_active_model(),
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
+                    messages=messages,
                     temperature=settings["temperature"],
                     stream=True,
                     # Without this a streamed response carries no usage chunk.
@@ -305,10 +316,7 @@ This section is REQUIRED and must be the last section. It contains ONLY the foll
         else:
             response = get_client().chat.completions.create(
                 model=config.get_active_model(),
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
+                messages=messages,
                 temperature=settings["temperature"],
                 **thinking_kwargs
             )
