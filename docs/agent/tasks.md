@@ -24,12 +24,12 @@
 - [ ] T-041 Check the Failed tab's "Scan Downloads for PDFs" and "Open PDF" buttons in the
       browser, and change UPLOAD_HINT to point at the scan (see 0020)
 - [ ] T-042 Download and scan ACM papers 423–426 (user; see 0020)
-- [ ] T-043 Turn oMLX's prompt cache back on (cache.enabled); the app's requests skip
-      storing (user; see 0021)
 - [ ] T-044 Watch the first 2-3 batches at N=4 for "Retry"/capacity lines and oMLX's peak;
       on any capacity retry, drop to N=3 with REVIEW_TOKEN_BUDGET=105000 (see 0021)
 
 ## Done (most recent first)
+- [x] T-043 oMLX prompt cache back on; 48 GB of incompatible old cache blocks deleted
+      (user, 2026-11-18, see 0021)
 - [x] T-045 Thinking-aware output reserve (15k), pause on prompt estimate, X-oMLX-Cache-Store
       header with oMLX version check, `probe` subcommand; 202 tests (2026-11-18, commit 3f2009e, see 0021)
 - [x] T-026 oMLX memory_guard_tier=aggressive and cache.enabled=false set (confirmed from the
