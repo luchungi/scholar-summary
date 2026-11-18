@@ -20,8 +20,15 @@
 - [ ] T-037 Look at the markdown table styling in the browser (index.css; not checked by eye)
 - [ ] T-038 extract_doi_from_url keeps Emerald's trailing article number
       (10.1108/MBE-08-2025-0176/1385260), so Crossref finds no title or abstract
+- [ ] T-040 Match downloaded PDFs to failed papers without a DOI in their URL by the
+      normalised title (≥ 30 chars) on page 1 (see 0020)
+- [ ] T-041 Check the Failed tab's "Scan Downloads for PDFs" and "Open PDF" buttons in the
+      browser, and change UPLOAD_HINT to point at the scan (see 0020)
+- [ ] T-042 Download and scan ACM papers 423–426 (user; see 0020)
 
 ## Done (most recent first)
+- [x] T-039 Scan Downloads for PDFs of failed papers, matched by DOI; paper_store, Open PDF
+      link for ACM; tests/test_paper_store.py (8 tests); #427 reviewed live (2026-11-18, see 0020)
 - [x] T-034 Alert titles keep the spaces around Scholar's bold keywords (gmail_fetcher);
       tests/test_gmail_fetcher.py (4 tests) (2026-11-16, see 0019)
 - [x] T-033 arXiv copy by title when the link gives no paper: find_arxiv_by_title, throttled,

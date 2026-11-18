@@ -47,3 +47,6 @@
   usage.completion_tokens_details.reasoning_tokens. Never part of message.content.
 - **Token budget**: the cap on estimated tokens across reviews in flight (prompt + output
   reserve) that decides whether another review may start. Not a slot count.
+- **User PDF**: a PDF the user saved for a failed paper, recorded in reports/user_pdfs.json
+  by path only. Not an uploaded file: the Dashboard upload makes its own record, and the app
+  keeps no copy of a user PDF.
