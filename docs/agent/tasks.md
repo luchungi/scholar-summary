@@ -26,8 +26,16 @@
 - [ ] T-042 Download and scan ACM papers 423–426 (user; see 0020)
 - [ ] T-044 Watch the first 2-3 batches at N=4 for "Retry"/capacity lines and oMLX's peak;
       on any capacity retry, drop to N=3 with REVIEW_TOKEN_BUDGET=105000 (see 0021)
+- [ ] T-048 Around 2026-12-22, review the web search log: search rate, credits, cited results
+      and weak domains; decide whether to keep, filter or remove search (see 0022)
+- [ ] T-049 Confirm four reviews truly overlap on oMLX 0.8.2 with shorter papers; the 0022 trial
+      reached three because of the token budget (see 0021, 0022, T-044)
 
 ## Done (most recent first)
+- [x] T-047 Local API guard (Origin, Host, Sec-Fetch-Site), restricted CORS, CSP, no report
+      images, link allowlist; checked in headless Chrome on both ports (2026-11-22, commit ec15de1, see 0022)
+- [x] T-046 Model-decided Tavily search, private key file, credit cap, Web Sources, usefulness
+      log and summary script; 288 tests, 4-paper live trial and control (2026-11-22, commit ec15de1, see 0022)
 - [x] T-043 oMLX prompt cache back on; 48 GB of incompatible old cache blocks deleted
       (user, 2026-11-18, see 0021)
 - [x] T-045 Thinking-aware output reserve (15k), pause on prompt estimate, X-oMLX-Cache-Store
@@ -59,17 +67,3 @@
 - [x] T-020 Token-budget admission with longest-fit backfill and a pause after long reviews (2026-11-01, see 0012, 0014)
 - [x] T-019 Triage feeds the scheduler; 4 papers in parallel; thread-safe URL rule writes (2026-11-01, see 0012)
 - [x] T-018 Concurrency default 1 in code; validated values set in .env (2026-11-01, see 0014)
-- [x] T-016 Backend shutdown teardown: shared FrameworkManager.stream_teardown consumed by
-      both the switch and shutdown paths, GET /api/shutdown/teardown/stream, ShutdownTerminal.tsx,
-      active-run marking, status-poll teardown; tests/test_shutdown_teardown.py (9 tests)
-      (2026-10-27, see 0011)
-- [x] T-013 Fix EndNote export: metadata-derived validated reference types with
-      url/reference_rules.json, arXiv journal string with the version from the Atom <id>,
-      Crossref chaining for published preprints, dropped %X and %<, split %J/%B
-      (2026-10-24, see decisions 0009 and 0010)
-- [x] T-014 Add pytest as a dev dependency and tests/test_citation_service.py: 32 tests over
-      the type resolver, the valid-EndNote-type invariant and golden .enw output
-      (2026-10-24, see 0009)
-- [x] T-012 Implement 1-Click EndNote Batch Export with attached PDFs, local staging directory, pre-flight paywall check, and direct macOS integration (2026-10-20, see decision 0008)
-- [x] T-011 Automate EndNote citation (.enw) and PDF downloads with multi-source metadata resolution, on-demand streaming, and bulk ZIP export (2026-10-19)
-- [x] T-010 Implement batch paper reviews with hardware-aware concurrency, two-phase pipeline, and staggered prefill (2026-10-18, see decision 0006)

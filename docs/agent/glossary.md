@@ -14,6 +14,8 @@
 - **Capacity error**: the LLM server refusing or killing a request for memory or load (oMLX
   prefill memory guard, memory-limit abort, HTTP 409/503/507, busy). Retried by the
   scheduler. Not a bad request or a network error.
+- **Cited result**: a web result whose [W1] marker appears in the finished report's text. It
+  shows the model used the result, not that the result improved the review (0022).
 - **Cool-down**: the pause after a review whose estimated prompt (output reserve excluded) is
   ≥30k tokens, before the next prefill starts, so oMLX's memory can settle (0021). Not the
   retry delay after a capacity error.
@@ -44,8 +46,10 @@
 - **Reference type vocabulary**: the closed set of `%0` values EndNote 21's import filter
   recognises, snapshotted in url/reference_rules.json. Not a free-text label — an unrecognised
   value is silently defaulted by EndNote, not rejected.
-- **Short calls**: title extraction, relevance filter, ratings repair. Always thinking off,
-  temperature 0.1.
+- **Search decision**: the short thinking-off call that may request web searches before a
+  review. It sees the paper but not the profile. Not the review call, which has no tools (0022).
+- **Short calls**: title extraction, relevance filter, ratings repair, search decision. Always
+  thinking off, temperature 0.1.
 - **Teardown**: unload the active framework's resident model, then stop that framework's
   server. Shared by the framework switch (0005) and backend shutdown (0011). Does not
   include killing the backend process.
@@ -56,3 +60,5 @@
 - **User PDF**: a PDF the user saved for a failed paper, recorded in reports/user_pdfs.json
   by path only. Not an uploaded file: the Dashboard upload makes its own record, and the app
   keeps no copy of a user PDF.
+- **Web Sources**: the report section the app builds from cited Tavily results, placed before
+  Ratings. Not written by the model, and not a list of every result returned (0022).

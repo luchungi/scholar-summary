@@ -18,3 +18,8 @@
 - Q-004 (2026-11-16) Why did 20 papers that extract fine today (7 arXiv, 13 direct PDFs)
   fail before 2026-11-01? Reasons were not stored then (T-021 added them). Leaning: the
   report stage, not retrieval. Needs: nothing unless new failures show a pattern.
+
+- Q-005 (2026-11-22) Are Gemma-era ratings comparable with Qwen-era ones? Paper 415 scored
+  relevance 5.0 on Gemma without thinking, and 2.0–3.0 across five Qwen reviews with thinking,
+  with and without search. Reports do not store their model. Leaning: do not compare across the
+  switch (around 2026-11-16). Needs: re-review a small Gemma-era sample, or store the model per report.
