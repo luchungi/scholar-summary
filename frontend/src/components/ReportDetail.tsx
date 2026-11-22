@@ -329,6 +329,8 @@ export default function ReportDetail({ reportId, onBack }: ReportDetailProps) {
             <ReactMarkdown
               remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkMath]}
               rehypePlugins={[rehypeKatex]}
+              disallowedElements={['img']}
+              unwrapDisallowed
               components={{
                 a: ({ href, children }) => (
                   <a href={href} target="_blank" rel="noopener noreferrer">

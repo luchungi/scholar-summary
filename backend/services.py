@@ -18,6 +18,7 @@ from backend.database import engine
 from backend.review_scheduler import (ReviewScheduler, estimate_prompt_tokens, is_capacity_abort,
                                       review_output_reserve_tokens)
 import re
+import web_search
 
 def extract_ratings(content: str):
     quality_rating = None
@@ -497,6 +498,14 @@ def review_cooldown_seconds() -> float:
         seconds = max(seconds, config.REVIEW_COOLDOWN_SECONDS_CACHE_ON)
     return seconds
 
+def _print_research(research: "web_search.Research", tag: str = "") -> None:
+    """Every query goes in the run log; the full record is in the web search log."""
+    prefix = f"{tag} " if tag else ""
+    print(f"{prefix}{web_search.describe(research)}")
+    for query in research.queries:
+        note = f" ({query['error']})" if query.get("error") else ""
+        print(f"{prefix}  [{query['purpose']}] {query['query']} -> {query['status']}{note}")
+
 def run_paper_processing_task(
     run_id: int,
     papers_to_process: List[Dict[str, str]],
@@ -538,17 +547,32 @@ def run_paper_processing_task(
         # =========================================================================
         # REVIEW: token-budget scheduler fed by triage
         # =========================================================================
+        def prepare_fn(paper: Dict[str, Any], tag: str, release_prefill):
+            # Kept on the paper so a capacity retry of the review does not search again.
+            if paper.get("research") is not None:
+                release_prefill()
+                return
+            research = web_search.research_paper(
+                paper["title"], paper["paper_text"], agent.decide_web_searches,
+                after_decide=release_prefill, should_reraise=is_capacity_abort,
+            )
+            paper["research"] = research
+            _print_research(research, tag)
+
         def review_fn(paper: Dict[str, Any], tag: str, on_first_token):
             print(f"{tag} Starting report generation using model: {config.get_active_model()}...")
             return agent.generate_paper_report(
                 paper["title"], paper["url"], paper["paper_text"], current_interests,
-                paper["access_info"], on_first_token=on_first_token
+                paper["access_info"], on_first_token=on_first_token,
+                web_research=paper.get("research"),
             )
 
         def on_review_done(paper: Dict[str, Any], tag: str, report: Optional[str], error: Optional[BaseException]):
             p_title, p_url, p_access = paper["title"], paper["url"], paper["access_info"]
             if error is not None:
                 print(f"{tag} [-] Error generating report: {error}")
+                web_search.log_review(paper.get("research"), run_id=run_id, paper_title=p_title, paper_url=p_url,
+                                      report=None, report_path=None, outcome="failed")
                 bump("failure")
                 if is_capacity_abort(error):
                     reason = f"LLM server aborted the review for capacity, also on retry: {error}"
@@ -570,9 +594,13 @@ def run_paper_processing_task(
 
                 q_val, r_val = extract_ratings(full_report)
                 _record_success_paper(run_id, p_url, p_title, str(report_path), q_val, r_val)
+                web_search.log_review(paper.get("research"), run_id=run_id, paper_title=p_title, paper_url=p_url,
+                                      report=full_report, report_path=str(report_path), outcome="success")
                 bump("success")
             except Exception as save_err:
                 print(f"{tag} [-] Error saving report/database: {save_err}")
+                web_search.log_review(paper.get("research"), run_id=run_id, paper_title=p_title, paper_url=p_url,
+                                      report=None, report_path=None, outcome="failed")
                 bump("failure")
                 _record_failed_paper(run_id, p_url, p_title, reason=f"Saving the report failed: {save_err}"[:500])
 
@@ -582,6 +610,7 @@ def run_paper_processing_task(
             token_budget=config.REVIEW_TOKEN_BUDGET,
             thread_context=lambda: LogCapture(q),
             cooldown_seconds=review_cooldown_seconds(),
+            prepare_fn=prepare_fn,
         )
 
         # =========================================================================
@@ -666,7 +695,7 @@ def run_paper_processing_task(
             else:
                 access_info = None
 
-            prompt_tokens = estimate_prompt_tokens(paper_text, current_interests)
+            prompt_tokens = estimate_prompt_tokens(paper_text, current_interests) + web_search.token_reserve()
             tokens = prompt_tokens + output_reserve
             scheduler.submit(
                 {"title": title, "url": url, "paper_text": paper_text, "access_info": access_info},
@@ -819,10 +848,14 @@ def run_uploaded_paper_task(
         print(f"[+] Paper Title: {title}")
 
         # 4. Generate report
+        research = None
         try:
             current_interests = ensure_interests_file()
+            research = web_search.research_paper(title, text, agent.decide_web_searches)
+            _print_research(research)
             print(f"[+] Generating summary report using model: {config.get_active_model()}...")
-            report = agent.generate_paper_report(title, "Uploaded File", text, current_interests, access_info)
+            report = agent.generate_paper_report(title, "Uploaded File", text, current_interests, access_info,
+                                                 web_research=research)
             report = f"# {title}\n\n**Source**: Uploaded PDF ({original_filename})\n\n**Extraction**: {access_info}\n\n---\n\n" + report
 
             # Save report file
@@ -831,6 +864,8 @@ def run_uploaded_paper_task(
             report_path = Path(config.REPORTS_DIR) / f"report_{safe_title}.md"
             report_path.write_text(report, encoding="utf-8")
             print(f"[+] Report saved to {report_path}")
+            web_search.log_review(research, run_id=run_id, paper_title=title, paper_url=f"file://{original_filename}",
+                                  report=report, report_path=str(report_path), outcome="success")
 
             # Extract ratings
             q_val, r_val = extract_ratings(report)
@@ -860,6 +895,8 @@ def run_uploaded_paper_task(
 
         except Exception as e:
             print(f"[-] Error generating report: {e}")
+            web_search.log_review(research, run_id=run_id, paper_title=title, paper_url=f"file://{original_filename}",
+                                  report=None, report_path=None, outcome="failed")
             with Session(engine) as session:
                 db_paper = Paper(
                     title=title,

@@ -103,6 +103,9 @@ class ReviewScheduler:
     review_fn(item, tag, on_first_token) -> result
         Runs one review. Must call on_first_token() when prefill finishes;
         any exception counts as a failed attempt.
+    prepare_fn(item, tag, release_prefill), optional
+        Runs before the review with the prefill lock held until it calls
+        release_prefill(). The review then takes the lock again.
     on_done(item, tag, result, error)
         Called exactly once per item with its final outcome (error is None on
         success). Not called for an attempt that is being retried.
@@ -119,8 +122,10 @@ class ReviewScheduler:
         cooldown_tokens: Optional[int] = None,
         cooldown_seconds: Optional[float] = None,
         retry_delay_seconds: Optional[float] = None,
+        prepare_fn: Optional[Callable[[Any, str, Callable[[], None]], None]] = None,
     ):
         self._review_fn = review_fn
+        self._prepare_fn = prepare_fn
         self._on_done = on_done
         self._max_concurrency = max(1, max_concurrency)
         self._token_budget = token_budget
@@ -224,31 +229,44 @@ class ReviewScheduler:
     def _pause(self, seconds: float) -> None:
         self._not_before = max(self._not_before, time.monotonic() + seconds)
 
+    def _with_prefill_lock(self, fn: Callable[[Callable[[], None]], Any],
+                           released_message: Optional[str] = None) -> Any:
+        """Runs fn(release) holding the prefill lock until it calls release() or returns."""
+        self._prefill_lock.acquire()
+        released = False
+
+        def release():
+            nonlocal released
+            if not released:
+                released = True
+                self._prefill_lock.release()
+                if released_message:
+                    self._log(released_message)
+
+        try:
+            return fn(release)
+        finally:
+            if not released:
+                released = True
+                self._prefill_lock.release()
+
     def _worker(self, entry: _Entry, slot: int) -> None:
         retry = False
         try:
             with self._thread_context():
                 tag = f"[Slot {slot}: {entry.label}]"
                 self._log(f"\n{tag} (~{entry.tokens} tokens) Waiting for prefill lock...")
-                self._prefill_lock.acquire()
-                released = False
-
-                def on_first_token():
-                    nonlocal released
-                    if not released:
-                        released = True
-                        self._prefill_lock.release()
-                        self._log(f"{tag} [+] Prefill completed; first token received. Prefill lock released.")
 
                 result, error = None, None
                 try:
-                    result = self._review_fn(entry.item, tag, on_first_token)
+                    if self._prepare_fn is not None:
+                        self._with_prefill_lock(
+                            lambda release: self._prepare_fn(entry.item, tag, release))
+                    result = self._with_prefill_lock(
+                        lambda release: self._review_fn(entry.item, tag, release),
+                        f"{tag} [+] Prefill completed; first token received. Prefill lock released.")
                 except Exception as e:
                     error = e
-                finally:
-                    if not released:
-                        released = True
-                        self._prefill_lock.release()
 
                 retry = (error is not None and is_capacity_abort(error)
                          and entry.retries < MAX_ABORT_RETRIES)

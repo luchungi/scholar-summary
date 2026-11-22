@@ -369,7 +369,7 @@ def test_batch_run_triage_feeds_reviews_and_records_outcomes(tmp_path, monkeypat
 
     calls = {"aborted": False}
 
-    def report(title, url, text, interests, access, on_first_token=None):
+    def report(title, url, text, interests, access, on_first_token=None, web_research=None):
         if on_first_token:
             on_first_token()
         if "flaky" in url and not calls["aborted"]:

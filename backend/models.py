@@ -27,6 +27,11 @@ class Paper(SQLModel, table=True):
     
     run: Optional[Run] = Relationship(back_populates="papers")
 
+class WebSearchUsage(SQLModel, table=True):
+    """Tavily credits counted per UTC calendar month (decision 0022)."""
+    month: str = Field(primary_key=True)  # "YYYY-MM"
+    credits: int = 0
+
 class EmailAlert(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     message_id: str = Field(unique=True, index=True)

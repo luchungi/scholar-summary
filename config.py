@@ -200,6 +200,18 @@ PDF_WATCH_DIR = os.path.expanduser(os.getenv("PDF_WATCH_DIR", "~/Downloads"))
 PDF_SCAN_DAYS = float(os.getenv("PDF_SCAN_DAYS", "7"))
 USER_PDF_INDEX = os.getenv("USER_PDF_INDEX", os.path.join(REPORTS_DIR, "user_pdfs.json"))
 
+# Web search during reviews (decision 0022). The key lives only in TAVILY_KEY_PATH, a
+# private file outside the repo; never put it in .env, whose values reach child processes.
+WEB_SEARCH_ENABLED = os.getenv("WEB_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+TAVILY_KEY_PATH = Path.home() / ".config" / "scholar-summary" / "tavily_key"
+WEB_SEARCH_MAX_QUERIES = int(os.getenv("WEB_SEARCH_MAX_QUERIES", "3"))
+WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
+WEB_SEARCH_SNIPPET_CHARS = int(os.getenv("WEB_SEARCH_SNIPPET_CHARS", "1000"))
+WEB_SEARCH_MONTHLY_CREDIT_CAP = int(os.getenv("WEB_SEARCH_MONTHLY_CREDIT_CAP", "800"))
+# Prompt tokens the review scheduler allows for results: 3 x 5 x 1,000 chars plus labels.
+WEB_SEARCH_TOKEN_RESERVE = int(os.getenv("WEB_SEARCH_TOKEN_RESERVE", "5000"))
+WEB_SEARCH_LOG_PATH = os.getenv("WEB_SEARCH_LOG_PATH", os.path.join(REPORTS_DIR, "web_search_log.jsonl"))
+
 def validate_config():
     """Validates configuration. Returns True if valid, raises ValueError if missing credentials."""
     credentials_file = Path(GMAIL_CREDENTIALS_PATH)

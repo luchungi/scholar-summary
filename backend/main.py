@@ -21,6 +21,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 import config
 from backend.database import create_db_and_tables, get_session, engine
 from backend.models import Run, Paper, EmailAlert
+from backend.security import ALLOWED_ORIGINS, LocalOnlyMiddleware
 from backend.services import (
     get_latest_alerts_from_gmail,
     start_paper_run,
@@ -50,14 +51,16 @@ from backend.pdf_service import (
 # Create FastAPI app
 app = FastAPI(title="Scholar Summary Agent Web API")
 
-# Add CORS Middleware to support hot-reloading frontend development on port 5173
+# CORS for the Vite dev server on port 5173; the app sends no cookies (decision 0022).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=list(ALLOWED_ORIGINS),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
+# Added last so it runs first: refuses cross-site requests before CORS or routing.
+app.add_middleware(LocalOnlyMiddleware)
 
 def ensure_paper_rating_columns():
     from sqlalchemy import text

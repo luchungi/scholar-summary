@@ -211,6 +211,9 @@ def get_academic_filename_base(metadata: Dict[str, Any]) -> str:
     title_part = clean_title_for_filename(metadata.get("title", "Paper"))
     return f"{author_part}_{year_part}_{title_part}"
 
+WEB_MARKER_RE = re.compile(r'\[W\d{1,2}\]')
+
+
 def extract_metadata_from_report(report_path: str) -> Dict[str, Any]:
     """
     Fallback parser that extracts metadata from the locally generated markdown report.
@@ -235,7 +238,8 @@ def extract_metadata_from_report(report_path: str) -> Dict[str, Any]:
 
         # 3. Authors
         authors_m = re.search(r'\*\*\s*Authors?\s*\*\*\s*:\s*([^\n]+)', content, re.IGNORECASE)
-        if authors_m:
+        # A [W1] marker means the value came from a web result: never export it (0022).
+        if authors_m and not WEB_MARKER_RE.search(authors_m.group(1)):
             raw_authors = authors_m.group(1).strip()
             # Clean possible markdown bold/italics
             raw_authors = raw_authors.replace("*", "").replace("`", "")
@@ -251,14 +255,14 @@ def extract_metadata_from_report(report_path: str) -> Dict[str, Any]:
 
         # 4. Venue/Journal
         venue_m = re.search(r'\*\*\s*Venue(?:/Journal)?\s*\*\*\s*:\s*([^\n]+)', content, re.IGNORECASE)
-        if venue_m:
+        if venue_m and not WEB_MARKER_RE.search(venue_m.group(1)):
             venue = venue_m.group(1).strip().replace("*", "").replace("`", "")
             if venue and "unknown" not in venue.lower():
                 data["journal"] = venue
 
         # 5. Year
         year_m = re.search(r'\*\*\s*Year\s*\*\*\s*:\s*([^\n]+)', content, re.IGNORECASE)
-        if year_m:
+        if year_m and not WEB_MARKER_RE.search(year_m.group(1)):
             ym = re.search(r'\b(19\d\d|20\d\d)\b', year_m.group(1))
             if ym:
                 data["year"] = ym.group(1)
@@ -269,6 +273,7 @@ def extract_metadata_from_report(report_path: str) -> Dict[str, Any]:
             # Strip markdown formatting
             text = ideas_m.group(0).strip()
             text = re.sub(r'#+\s*', '', text)
+            text = WEB_MARKER_RE.sub('', text)
             text = " ".join(text.split()[:150]) # First 150 words
             data["abstract"] = text
 
