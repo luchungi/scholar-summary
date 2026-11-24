@@ -38,6 +38,8 @@
   page itself is still read (0017). Not "skip this domain", and not proof of a paywall.
 - **Normal conditions**: how batches run in practice: VS Code closed, only Safari (the app UI)
   open. Benchmarks must match this; runs from a Claude/VS Code session don't.
+- **OpenReview challenge**: the HTTP 403 ChallengeRequiredError OpenReview gives logged-out
+  requests on its site and API; a logged-in request passes (0023). Not a 403 for a private paper.
 - **Output reserve**: the output tokens the token budget counts per review (15k with thinking
   on, 2k off), added to the prompt estimate. Bookkeeping only; it does not limit generation.
 - **Prompt cache (oMLX)**: oMLX's store of computed keys and values (KV cache) for prompt

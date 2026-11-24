@@ -30,8 +30,14 @@
       and weak domains; decide whether to keep, filter or remove search (see 0022)
 - [ ] T-049 Confirm four reviews truly overlap on oMLX 0.8.2 with shorter papers; the 0022 trial
       reached three because of the token budget (see 0021, 0022, T-044)
+- [ ] T-052 Retry OpenReview papers 49, 68, 72, 204, 330, 334, 446 from the Failed tab, then
+      import one through the one-click EndNote export, which was only tested with stubs (user; see 0023)
 
 ## Done (most recent first)
+- [x] T-051 Single-PDF and EndNote exports fetch OpenReview PDFs through the API; single and
+      bulk export of paper 446 checked live (2026-11-24, commit ebf0559, see 0023)
+- [x] T-050 OpenReview API client, private login file, setup script and retrieval order; 343
+      tests; paper 446 retrieved live, V1 checked on an ICLR 2021 paper (2026-11-24, commit ebf0559, see 0023)
 - [x] T-047 Local API guard (Origin, Host, Sec-Fetch-Site), restricted CORS, CSP, no report
       images, link allowlist; checked in headless Chrome on both ports (2026-11-22, commit ec15de1, see 0022)
 - [x] T-046 Model-decided Tavily search, private key file, credit cap, Web Sources, usefulness
@@ -65,5 +71,3 @@
 - [x] T-022 Token usage and prefill/generation timing logged on streamed reports (2026-11-01)
 - [x] T-021 Capacity-error retries (2, 60s), drop to one at a time only on overlap, failure reasons in the UI (2026-11-01, see 0012)
 - [x] T-020 Token-budget admission with longest-fit backfill and a pause after long reviews (2026-11-01, see 0012, 0014)
-- [x] T-019 Triage feeds the scheduler; 4 papers in parallel; thread-safe URL rule writes (2026-11-01, see 0012)
-- [x] T-018 Concurrency default 1 in code; validated values set in .env (2026-11-01, see 0014)

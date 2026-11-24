@@ -1,5 +1,7 @@
 # Archived tasks, 2026 (most recent first)
 
+- [x] T-019 Triage feeds the scheduler; 4 papers in parallel; thread-safe URL rule writes (2026-11-01, see 0012)
+- [x] T-018 Concurrency default 1 in code; validated values set in .env (2026-11-01, see 0014)
 - [x] T-016 Backend shutdown teardown: shared FrameworkManager.stream_teardown consumed by
       both the switch and shutdown paths, GET /api/shutdown/teardown/stream, ShutdownTerminal.tsx,
       active-run marking, status-poll teardown; tests/test_shutdown_teardown.py (9 tests)
