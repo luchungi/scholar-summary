@@ -11,6 +11,7 @@ import pymupdf
 import agent
 
 import config
+import openreview_client
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
@@ -460,6 +461,9 @@ def _retrieve_raw(url, timeout=15, title=None):
     """
     Retrieves the full text of a paper from a URL.
     Order:
+    - A PDF the user downloaded for this paper
+    - The OpenReview API for openreview.net links, when a login is set up (0023). This
+      replaces the two steps below, because OpenReview's site challenges scripts
     - Academic API retrieval (arXiv, Semantic Scholar)
     - Domain specific URL rules (loaded dynamically from url/rules.json), learned for a
       new domain by the LLM agent
@@ -487,32 +491,37 @@ def _retrieve_raw(url, timeout=15, title=None):
     print(f"Resolving URL: {url}")
     api_title, api_abstract = None, None
 
-    # Try academic API resolution first
-    try:
-        api_result = academic_api.get_paper_by_academic_api(url)
-        if api_result:
-            api_title = api_result.get("title") or None
-            api_abstract = api_result.get("abstract") or None
-        if api_result and api_result.get("pdf_url"):
-            pdf_url = api_result["pdf_url"]
-            print(f"[+] Resolved direct PDF URL via Academic API: {pdf_url}")
-            print(f"Fetching content from: {pdf_url} ...")
-            page = _fetch(pdf_url, timeout)
-            if page["is_pdf"]:
-                print("Downloading and parsing PDF...")
-                text = _pdf_text(page)
-                if text.strip():
-                    return {"coverage": "full", "text": text, "source": "pdf", "title": api_title}
-                print("Warning: Extracted PDF text from Academic API was empty. Falling back to web scraper.")
-            else:
-                print(f"[-] Academic API link did not return a PDF (HTTP {page['status']}). Falling back to web scraper.")
-    except Exception as api_err:
-        print(f"[-] Academic API resolution error/fallback: {api_err}")
-
-    outcome = _retrieve_from_site(url, timeout)
-    if outcome["coverage"] == "full":
-        outcome["title"] = _usable_title(api_title, outcome.get("title"))
+    outcome = _retrieve_from_openreview(url)
+    if outcome and outcome["coverage"] == "full":
         return outcome
+
+    if outcome is None:
+        # Try academic API resolution first
+        try:
+            api_result = academic_api.get_paper_by_academic_api(url)
+            if api_result:
+                api_title = api_result.get("title") or None
+                api_abstract = api_result.get("abstract") or None
+            if api_result and api_result.get("pdf_url"):
+                pdf_url = api_result["pdf_url"]
+                print(f"[+] Resolved direct PDF URL via Academic API: {pdf_url}")
+                print(f"Fetching content from: {pdf_url} ...")
+                page = _fetch(pdf_url, timeout)
+                if page["is_pdf"]:
+                    print("Downloading and parsing PDF...")
+                    text = _pdf_text(page)
+                    if text.strip():
+                        return {"coverage": "full", "text": text, "source": "pdf", "title": api_title}
+                    print("Warning: Extracted PDF text from Academic API was empty. Falling back to web scraper.")
+                else:
+                    print(f"[-] Academic API link did not return a PDF (HTTP {page['status']}). Falling back to web scraper.")
+        except Exception as api_err:
+            print(f"[-] Academic API resolution error/fallback: {api_err}")
+
+        outcome = _retrieve_from_site(url, timeout)
+        if outcome["coverage"] == "full":
+            outcome["title"] = _usable_title(api_title, outcome.get("title"))
+            return outcome
 
     # The link did not give the paper. Look for an arXiv copy under the same title.
     search_title = _usable_title(api_title, outcome.get("title"), title)
@@ -535,6 +544,36 @@ def _retrieve_raw(url, timeout=15, title=None):
         outcome["abstract"] = api_abstract
     outcome["title"] = _usable_title(api_title, outcome.get("title"))
     return outcome
+
+def _retrieve_from_openreview(url):
+    """
+    Fetches an openreview.net paper through its API (decision 0023). Returns None when this
+    does not apply, else a dict with "coverage" and what goes with it (see classify_page).
+    """
+    paper = openreview_client.fetch_paper(url)
+    if paper is None:
+        return None
+    print(f"Fetching from the OpenReview API: {url}")
+    reason = paper["reason"]
+    if paper["pdf"] is not None:
+        if is_pdf_bytes(paper["pdf"]):
+            text = _pdf_text({"url": url, "body": paper["pdf"]})
+            if text.strip():
+                print("[+] Got the PDF from the OpenReview API.")
+                return {"coverage": "full", "text": text, "source": "pdf", "title": _usable_title(paper["title"])}
+            reason = "The PDF has no extractable text (probably scanned images)"
+        else:
+            reason = "OpenReview did not return a PDF"
+    print(f"[-] {reason}: {url}")
+    abstract = paper["abstract"]
+    return {
+        "coverage": "blocked" if paper["blocked"] else "failed",
+        "text": "",
+        "source": None,
+        "title": _usable_title(paper["title"]),
+        "abstract": abstract if abstract and len(abstract) >= MIN_ABSTRACT_CHARS else None,
+        "reason": reason,
+    }
 
 def _retrieve_from_site(url, timeout=15):
     """

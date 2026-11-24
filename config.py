@@ -212,6 +212,10 @@ WEB_SEARCH_MONTHLY_CREDIT_CAP = int(os.getenv("WEB_SEARCH_MONTHLY_CREDIT_CAP", "
 WEB_SEARCH_TOKEN_RESERVE = int(os.getenv("WEB_SEARCH_TOKEN_RESERVE", "5000"))
 WEB_SEARCH_LOG_PATH = os.getenv("WEB_SEARCH_LOG_PATH", os.path.join(REPORTS_DIR, "web_search_log.jsonl"))
 
+# OpenReview login (decision 0023). Like the Tavily key, it lives only in this private file,
+# written by scripts/setup_openreview.py; never put it in .env.
+OPENREVIEW_CREDENTIALS_PATH = Path.home() / ".config" / "scholar-summary" / "openreview.env"
+
 def validate_config():
     """Validates configuration. Returns True if valid, raises ValueError if missing credentials."""
     credentials_file = Path(GMAIL_CREDENTIALS_PATH)

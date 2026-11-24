@@ -18,6 +18,7 @@ from backend.database import engine
 from backend.review_scheduler import (ReviewScheduler, estimate_prompt_tokens, is_capacity_abort,
                                       review_output_reserve_tokens)
 import re
+import openreview_client
 import web_search
 
 def extract_ratings(content: str):
@@ -521,6 +522,7 @@ def run_paper_processing_task(
     with LogCapture(q):
         print(f"[+] Starting paper processing run {run_id} at {datetime.now()}")
         print(f"[+] Papers in batch: {len(papers_to_process)}")
+        openreview_client.reset_login_failure()
 
         counts = {"success": 0, "failure": 0, "skipped": 0, "queued": 0}
         counts_lock = threading.Lock()

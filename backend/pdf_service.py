@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 import requests
 
 import academic_api
+import openreview_client
 import paper_retriever
 import paper_store
 
@@ -36,6 +37,11 @@ def resolve_pdf_url(url: str, title: Optional[str] = None, timeout: int = 10) ->
         if candidate.exists():
             return f"file://{candidate.resolve()}"
         return None
+
+    # OpenReview challenges scripts on its site, so its PDFs come through the API (0023).
+    # This link holds no credentials; download_pdf_bytes turns it into an API call.
+    if openreview_client.can_fetch(url):
+        return f"https://openreview.net/pdf?id={openreview_client.extract_forum_id(url)}"
 
     # 1. arXiv: fast-path
     arxiv_id = academic_api.extract_arxiv_id(url)
@@ -120,6 +126,13 @@ def download_pdf_bytes(resolved_pdf_url: str, timeout: int = 25) -> Optional[byt
             local_path = Path(resolved_pdf_url[7:])
             if local_path.exists():
                 return local_path.read_bytes()
+            return None
+
+        paper = openreview_client.fetch_paper(resolved_pdf_url)
+        if paper is not None:
+            if paper_retriever.is_pdf_bytes(paper["pdf"]):
+                return paper["pdf"]
+            print(f"[PDF Service] OpenReview gave no PDF: {paper['reason'] or 'the answer was not a PDF'}")
             return None
 
         resp = requests.get(resolved_pdf_url, headers=HEADERS, timeout=timeout)

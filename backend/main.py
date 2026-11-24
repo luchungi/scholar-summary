@@ -33,6 +33,7 @@ from backend.services import (
 from backend.framework_manager import FrameworkManager
 import agent
 import model_settings
+import openreview_client
 import paper_retriever
 from agent import update_user_interests
 from main import ensure_interests_file, sanitize_filename
@@ -367,14 +368,24 @@ def download_paper_pdf(paper_id: int, session: Session = Depends(get_session)):
         )
 
     filename = f"{filename_base}.pdf"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Access-Control-Expose-Headers": "Content-Disposition"
+    }
+
+    # Fetched before answering, so a failure is an error and not a broken download (0023).
+    if openreview_client.can_fetch(pdf_url):
+        openreview_client.reset_login_failure()
+        pdf_bytes = download_pdf_bytes(pdf_url)
+        if not pdf_bytes:
+            raise HTTPException(status_code=502, detail="OpenReview did not provide the PDF for this paper.")
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
     try:
         return StreamingResponse(
             stream_pdf(pdf_url),
             media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Access-Control-Expose-Headers": "Content-Disposition"
-            }
+            headers=headers
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to stream PDF from source: {e}")
@@ -392,6 +403,7 @@ def bulk_export_reports(req: BulkExportRequest, session: Session = Depends(get_s
     if not papers:
         raise HTTPException(status_code=404, detail="None of the selected papers were found")
 
+    openreview_client.reset_login_failure()
     zip_buffer = io.BytesIO()
     all_metadata = []
     summary_lines = [
@@ -500,6 +512,8 @@ def endnote_export(req: EndNoteExportRequest, session: Session = Depends(get_ses
     papers = session.exec(select(Paper).where(Paper.id.in_(req.paper_ids))).all()
     if not papers:
         raise HTTPException(status_code=404, detail="None of the selected papers were found")
+
+    openreview_client.reset_login_failure()
 
     # If skip_paywalled is True, filter out papers without a downloadable PDF
     filtered_papers = []
